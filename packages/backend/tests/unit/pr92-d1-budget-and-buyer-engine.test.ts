@@ -205,47 +205,39 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
   });
 
   describe('Part B Item 5: High-Intent Decision-Grade Starter Inventory', () => {
-    it('creates 7 high-intent physical product starter deals across Skincare/Men Grooming', () => {
+    it('creates 6 high-intent skincare face serum starter deals across World of Asaya, Plum, Dot & Key, Kama Ayurveda', () => {
       const starters = createHighIntentStarterDeals();
-      expect(starters.length).toBe(7);
+      expect(starters.length).toBe(6);
 
       for (const deal of starters) {
         expect(deal.isSeedFallback).toBe(true);
-        expect(deal.observedAt).toBe('2026-11-24T00:00:00.000Z');
+        expect(deal.observedAt).toBe('2026-11-25T15:00:00.000Z');
+        expect(deal.subCategory).toBe('face-serum');
+        expect(deal.pricePerMlINR).toBeGreaterThan(0);
       }
+
+      const asayaSpot = starters.find(d => d.id === 'deal_asaya_spot_targeting_serum_30ml');
+      expect(asayaSpot).toBeDefined();
+      expect(asayaSpot?.currentPriceINR).toBe(479);
+      expect(asayaSpot?.affiliateCampaignId).toBe('6458');
 
       const dotKey = starters.find(d => d.brand === 'Dot & Key');
       expect(dotKey).toBeDefined();
-      expect(dotKey?.currentPriceINR).toBe(495);
+      expect(dotKey?.currentPriceINR).toBe(591);
       expect(dotKey?.currency).toBe('INR');
       expect(dotKey?.affiliateNetwork).toBe('CUELINKS');
 
       const kama = starters.find(d => d.brand === 'Kama Ayurveda');
       expect(kama).toBeDefined();
-      expect(kama?.currentPriceINR).toBe(1995);
+      expect(kama?.currentPriceINR).toBe(2695);
+      expect(kama?.productUrl).toContain('kamaayurveda.in');
 
-      const ustraa = starters.find(d => d.brand === 'Ustraa');
-      expect(ustraa).toBeDefined();
-      expect(ustraa?.currentPriceINR).toBe(399);
-
-      const tmc = starters.find(d => d.brand === 'The Man Company');
-      expect(tmc).toBeDefined();
-      expect(tmc?.currentPriceINR).toBe(299);
-
-      const swiss = starters.find(d => d.brand === 'Swiss Beauty');
-      expect(swiss).toBeDefined();
-      expect(swiss?.currentPriceINR).toBe(399);
-
-      const mcaffeine = starters.find(d => d.brand === 'mCaffeine');
-      expect(mcaffeine).toBeDefined();
-      expect(mcaffeine?.currentPriceINR).toBe(349);
-
-      const beardo = starters.find(d => d.brand === 'Beardo');
-      expect(beardo).toBeDefined();
-      expect(beardo?.currentPriceINR).toBe(225);
+      const plumNia = starters.find(d => d.id === 'deal_plum_10_niacinamide_rice_water_50ml');
+      expect(plumNia).toBeDefined();
+      expect(plumNia?.currentPriceINR).toBe(764);
     });
 
-    it('generates high-intent comparison pairs matching India Grooming & Skincare', () => {
+    it('generates high-intent comparison pairs matching India Skincare Face Serums', () => {
       const starters = createHighIntentStarterDeals();
       const pairs = generateComparisonPairs(starters, 10);
       expect(pairs.length).toBeGreaterThanOrEqual(2);
@@ -261,7 +253,7 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
       const hubs = generateBuyerIntentHubs(starters, siteUrl, 10);
 
       expect(hubs.length).toBeGreaterThanOrEqual(2);
-      const skincareHub = hubs.find(h => h.intentSlug === 'skincare-and-grooming-under-2000' || h.intentSlug === 'grooming-and-perfume-bundles-under-1000');
+      const skincareHub = hubs.find(h => h.intentSlug === 'niacinamide-serums-india' || h.intentSlug === 'skincare-and-grooming-under-2000');
       expect(skincareHub).toBeDefined();
       expect(skincareHub?.deals.length).toBeGreaterThanOrEqual(2);
 
@@ -282,15 +274,15 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
 
     it('resolves starter deals by ID and slug in AutonomousDealDiscoveryEngine', async () => {
       const engine = AutonomousDealDiscoveryEngine.getInstance();
-      const resolvedById = await engine.resolveDeal('deal_dotkey_72hr_hydrating_gel');
+      const resolvedById = await engine.resolveDeal('deal_asaya_spot_targeting_serum_30ml');
       expect(resolvedById).toBeDefined();
-      expect(resolvedById?.title).toContain('Dot & Key');
-      expect(resolvedById?.currentPriceINR).toBe(495);
+      expect(resolvedById?.title).toContain('World of Asaya');
+      expect(resolvedById?.currentPriceINR).toBe(479);
 
-      const resolvedBySlug = await engine.resolveDeal('ustraa-beard-growth-oil');
+      const resolvedBySlug = await engine.resolveDeal('kama-ayurveda-kumkumadi-silky-serum-15ml');
       expect(resolvedBySlug).toBeDefined();
-      expect(resolvedBySlug?.merchant).toBe('Ustraa');
-      expect(resolvedBySlug?.currentPriceINR).toBe(399);
+      expect(resolvedBySlug?.merchant).toBe('Kama Ayurveda');
+      expect(resolvedBySlug?.currentPriceINR).toBe(2695);
     });
   });
 });

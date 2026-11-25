@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction, resolveVerificationTokens } from '../config/env.js';
-import { renderCustomerDeskWidgetHtml } from '../revenue/customer-desk-widget.js';
 import { isImpulseConversionDeal } from './autonomous-deal-discovery-engine.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -89,6 +88,78 @@ function computeEvidenceDepth(d: any): number {
   return score;
 }
 
+function formatHumanVerifiedDate(rawTs?: string | null): string {
+  const s = String(rawTs || '').trim();
+  if (!s) return 'Verification timestamp unavailable';
+  const parsed = Date.parse(s);
+  if (Number.isNaN(parsed)) return s;
+  return new Date(parsed).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata'
+  });
+}
+
+function inferDealSubCategory(d: any): string {
+  const explicit = String(d?.subCategory || d?.evidenceJson?.subCategory || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  const text = `${d?.title || ''} ${d?.category || ''}`.toLowerCase();
+  if (/serum|niacinamide|alpha arbutin|vitamin c|kumkumadi/.test(text)) return 'face-serum';
+  if (/earbud|tws|airdopes/.test(text)) return 'tws-earbuds';
+  if (/soundbar|speaker/.test(text)) return 'soundbar';
+  if (/dashcam/.test(text)) return 'dashcam';
+  if (/smartwatch|watch/.test(text)) return 'smartwatch';
+  if (/beard|trimmer/.test(text)) return 'grooming';
+  return '';
+}
+
+function getRawSpecsMap(d: any): Record<string, string> {
+  const merged: Record<string, string> = {};
+  const fromEv = d?.evidenceJson?.rawSpecs;
+  const fromDeal = d?.specs;
+  if (fromEv && typeof fromEv === 'object') {
+    for (const [k, v] of Object.entries(fromEv)) {
+      if (v !== null && v !== undefined && String(v).trim()) merged[String(k)] = String(v);
+    }
+  }
+  if (fromDeal && typeof fromDeal === 'object') {
+    for (const [k, v] of Object.entries(fromDeal)) {
+      if (v !== null && v !== undefined && String(v).trim()) merged[String(k)] = String(v);
+    }
+  }
+  return merged;
+}
+
+function getUnitCostDisplay(d: any): { volumeLabel: string; pricePerMlLabel: string } {
+  let vol = Number(d?.unitVolumeMl || d?.evidenceJson?.unitVolumeMl || 0);
+  if (!vol) {
+    const match = String(d?.title || '').match(/\b(\d+(?:\.\d+)?)\s*ml\b/i);
+    if (match) vol = Number(match[1]);
+  }
+  const price = Number(d?.currentPriceINR || 0);
+  const computedPerMl = vol > 0 && price > 0 ? Number((price / vol).toFixed(2)) : 0;
+  const perMl = computedPerMl > 0
+    ? computedPerMl
+    : Number(d?.pricePerMlINR || d?.evidenceJson?.pricePerMlINR || 0);
+  return {
+    volumeLabel: vol > 0 ? `${vol} ml` : '',
+    pricePerMlLabel: perMl > 0 ? `₹${perMl.toFixed(2)}/ml` : ''
+  };
+}
+
+function formatStockStatusLabel(deal: any): string {
+  if (isSeedFallbackDeal(deal)) return 'SEED_SNAPSHOT';
+  if (deal?.availability === 'OUT_OF_STOCK') return 'Out of Stock';
+  if (deal?.availability === 'LIMITED_STOCK') return '✓ Limited Stock';
+  return '✓ Verified In-Stock';
+}
+
+function getProductImageUrl(d: any): string {
+  const raw = String(d?.imageUrl || d?.evidenceJson?.imageUrl || '').trim();
+  return /^https:\/\//i.test(raw) ? raw : '';
+}
+
 export function generateComparisonPairs(deals: any[], limit: number = 15): ComparisonPair[] {
   const baseFilter = (d: any) =>
     d &&
@@ -150,6 +221,9 @@ export function generateComparisonPairs(deals: any[], limit: number = 15): Compa
         if (!slugA || !slugB || slugA === slugB) continue;
         const catB = String(b.category || 'General').trim().toLowerCase();
         if (catA !== catB) continue;
+        const subA = inferDealSubCategory(a);
+        const subB = inferDealSubCategory(b);
+        if (subA && subB && subA !== subB) continue;
         const priceB = Number(b.currentPriceINR || 0);
         const tierB = getPriceTier(priceB);
         const ratio = Math.max(priceA, priceB) / Math.max(1, Math.min(priceA, priceB));
@@ -272,6 +346,33 @@ interface HubSeedDefinition {
 }
 
 const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
+  {
+    intentSlug: 'niacinamide-serums-india',
+    title: 'Best Niacinamide Serums in India — Cost per ml & Ingredient Comparison',
+    h1: 'Best Niacinamide Face Serums in India (Cost per ml & Formula Check)',
+    description: 'Compare 5% and 10% Niacinamide serums from World of Asaya, Plum, and Dot & Key by cost per ml, Alpha Arbutin or Zinc PCA pairing, and fragrance profile.',
+    priceCapLabel: 'Under ₹1,000',
+    categoryLabel: 'Skincare Serums',
+    maxPriceINR: 1000,
+    predicate: (d, text, price) => {
+      const sub = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase();
+      const isSerum = sub === 'face-serum' || /\bserum\b/i.test(text);
+      return price > 0 && price <= 1000 && isSerum && /(niacinamide|alpha arbutin|rice water|pore)/i.test(text);
+    }
+  },
+  {
+    intentSlug: 'vitamin-c-and-brightening-serums-india',
+    title: 'Best Vitamin C & Brightening Face Serums in India (Cost per ml Guide)',
+    h1: 'Best Vitamin C & Brightening Face Serums in India',
+    description: 'Side-by-side comparison of stabilized 10%–15% Vitamin C serums, Alpha Arbutin, and Saffron formulations with verified Indian D2C pricing and pack unit costs.',
+    priceCapLabel: 'All Tiers',
+    categoryLabel: 'Skincare Serums',
+    predicate: (d, text, price) => {
+      const sub = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase();
+      const isSerum = sub === 'face-serum' || /\bserum\b/i.test(text);
+      return price > 0 && isSerum && /(vitamin c|ethyl ascorbic|kumkumadi|alpha arbutin|spot targeting|brightening)/i.test(text);
+    }
+  },
   {
     intentSlug: 'audio-and-earbuds-under-2000',
     title: 'Best Audio & Wireless Earbuds Under ₹2,000 in India (Verified Prices)',
@@ -816,7 +917,6 @@ export class StaticSiteGenerator {
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
-  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }
@@ -1081,38 +1181,55 @@ export class StaticSiteGenerator {
       const amazonRailHref = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`;
       const detailSlug = deal.slug || deal.canonicalSlug || deal.id;
       const detailHref = detailSlug ? `/deals/${encodeURIComponent(detailSlug)}` : targetHref;
-      const observedAt = deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || '';
+      const rawObservedAt = String(deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || '');
+      const observedAt = formatHumanVerifiedDate(rawObservedAt);
       const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop);
       const isFeatured = Boolean(deal.isFeatured ?? deal.evidenceJson?.isFeatured);
       const isCouponOnly = Number(deal.currentPriceINR || 0) <= 0;
+      const unitInfo = getUnitCostDisplay(deal);
+      const imgUrl = getProductImageUrl(deal);
+      const rawSpecs = getRawSpecsMap(deal);
+      const keyActives = rawSpecs['Key Ingredients'] || '';
+      const fragranceNote = rawSpecs['Fragrance Profile'] || '';
       const amazonRailLabel = (deal.affiliateNetwork === 'AMAZON_IN' || deal.merchant?.toLowerCase() === 'amazon')
         ? "Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)"
         : "Check Today's Live Marketplace Price &amp; Partner Coupons &rarr; (#Ad)";
       return `
-      <div class="price-card deal-card" data-catalog-slot="${this.escapeHtml(deal.catalogSlot || deal.evidenceJson?.catalogSlot || 'ACTIVE')}" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
+      <div class="price-card deal-card" data-catalog-slot="${this.escapeHtml(deal.catalogSlot || deal.evidenceJson?.catalogSlot || 'ACTIVE')}" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.25rem; display: flex; flex-direction: column; justify-content: space-between; min-width: 0;">
         <div>
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.65rem; flex-wrap: wrap;">
             <span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; text-transform: uppercase;">${this.escapeHtml(deal.brand)}</span>
             <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
               ${isFeatured ? `<span style="font-size: 0.72rem; background: rgba(6, 182, 212, 0.18); color: #67e8f9; border: 1px solid rgba(6, 182, 212, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Featured</span>` : ''}
               ${hasPriceDrop ? `<span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Verified Price Drop</span>` : ''}
               ${isSeedFallbackDeal(deal)
                 ? `<span style="font-size: 0.75rem; background: rgba(245, 158, 11, 0.16); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">SEED_SNAPSHOT</span>`
-                : `<span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>`}
+                : `<span style="font-size: 0.75rem; background: ${deal.availability === 'OUT_OF_STOCK' ? 'rgba(239, 68, 68, 0.16)' : 'rgba(16, 185, 129, 0.15)'}; color: ${deal.availability === 'OUT_OF_STOCK' ? '#fca5a5' : '#34d399'}; border: 1px solid ${deal.availability === 'OUT_OF_STOCK' ? 'rgba(239, 68, 68, 0.35)' : 'rgba(16, 185, 129, 0.3)'}; padding: 0.2rem 0.5rem; border-radius: 9999px;">${this.escapeHtml(formatStockStatusLabel(deal))}</span>`}
             </div>
           </div>
-          <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.5rem 0; line-height: 1.4;"><a href="${this.escapeHtml(detailHref)}" style="color: #fff; text-decoration: none;">${this.escapeHtml(deal.title)}</a></h2>
-          <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.65rem;">
+          ${imgUrl ? `
+          <a href="${this.escapeHtml(detailHref)}" style="display: block; background: #090d16; border: 1px solid #1e293b; border-radius: 10px; padding: 0.65rem; margin-bottom: 0.85rem; text-align: center;">
+            <img src="${this.escapeHtml(imgUrl)}" alt="${this.escapeHtml(deal.title)}" loading="lazy" style="max-height: 180px; width: auto; max-width: 100%; object-fit: contain; display: block; margin: 0 auto; border-radius: 6px;">
+          </a>` : ''}
+          <h2 style="font-size: 1.1rem; color: #fff; margin: 0 0 0.45rem 0; line-height: 1.38;"><a href="${this.escapeHtml(detailHref)}" style="color: #fff; text-decoration: none;">${this.escapeHtml(deal.title)}</a></h2>
+          <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.55rem;">
             <span>${this.escapeHtml(deal.merchant)}</span> &bull; <span>${this.escapeHtml(deal.category)}</span>
           </div>
-          ${deal.targetBuyerSegment ? `<div style="font-size: 0.76rem; color: #cbd5e1; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 6px; padding: 0.35rem 0.6rem; margin-bottom: 0.75rem;">Target Buyer: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
-          <div style="display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin: 1rem 0 0.35rem 0;">
+          ${(unitInfo.volumeLabel || unitInfo.pricePerMlLabel) ? `
+          <div style="display: flex; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.6rem;">
+            ${unitInfo.volumeLabel ? `<span style="font-size: 0.74rem; font-weight: 700; color: #e2e8f0; background: #0f172a; border: 1px solid #334155; padding: 0.18rem 0.55rem; border-radius: 6px;">Pack: ${this.escapeHtml(unitInfo.volumeLabel)}</span>` : ''}
+            ${unitInfo.pricePerMlLabel ? `<span style="font-size: 0.74rem; font-weight: 700; color: #67e8f9; background: rgba(6, 182, 212, 0.12); border: 1px solid rgba(6, 182, 212, 0.35); padding: 0.18rem 0.55rem; border-radius: 6px;">Unit Cost: ${this.escapeHtml(unitInfo.pricePerMlLabel)}</span>` : ''}
+          </div>` : ''}
+          ${keyActives ? `<div style="font-size: 0.78rem; color: #cbd5e1; margin-bottom: 0.35rem;"><strong style="color:#94a3b8;">Actives:</strong> ${this.escapeHtml(keyActives)}</div>` : ''}
+          ${fragranceNote ? `<div style="font-size: 0.76rem; color: #94a3b8; margin-bottom: 0.5rem;"><strong>Fragrance:</strong> ${this.escapeHtml(fragranceNote)}</div>` : ''}
+          ${deal.targetBuyerSegment ? `<div style="font-size: 0.76rem; color: #cbd5e1; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 6px; padding: 0.4rem 0.65rem; margin-bottom: 0.75rem;">Best For: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
+          <div style="display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin: 0.85rem 0 0.3rem 0;">
             ${isCouponOnly
               ? `<span style="font-size: 1.15rem; font-weight: 800; color: #38bdf8;">Verified Merchant Offer</span>`
-              : `<span style="font-size: 1.6rem; font-weight: 800; color: #fff;">₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}</span>`}
-            ${!isCouponOnly && deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.85rem; color: #64748b; text-decoration: line-through;">Merchant Listed MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
+              : `<span style="font-size: 1.55rem; font-weight: 800; color: #fff;">₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}</span>`}
+            ${!isCouponOnly && deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.84rem; color: #64748b; text-decoration: line-through;">Merchant Listed MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
           </div>
-          ${observedAt ? `<div style="font-size: 0.74rem; color: #94a3b8; margin-bottom: 0.5rem;">Observed: <code>${this.escapeHtml(observedAt)}</code></div>` : ''}
+          ${rawObservedAt ? `<div style="font-size: 0.74rem; color: #94a3b8; margin-bottom: 0.5rem;"><time datetime="${this.escapeHtml(rawObservedAt)}">Checked ${this.escapeHtml(observedAt)}</time></div>` : ''}
           ${deal.couponCode ? `
             <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; border-radius: 8px; padding: 0.6rem 0.8rem; margin: 0.75rem 0; display: flex; justify-content: space-between; align-items: center;">
               <div>
@@ -1124,12 +1241,13 @@ export class StaticSiteGenerator {
           ` : ''}
           ${deal.couponConditions ? `<p style="font-size: 0.78rem; color: #94a3b8; font-style: italic; margin: 0.5rem 0 0 0;">${this.escapeHtml(deal.couponConditions)}</p>` : ''}
         </div>
-        <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #1e293b; display: flex; flex-direction: column; gap: 0.5rem;">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
-            <span style="font-size: 0.75rem; color: #64748b;">#Ad &bull; Verified D2C Rail</span>
-            <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.9rem; border-radius: 8px; text-decoration: none;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
+        <div style="margin-top: 1.15rem; padding-top: 0.9rem; border-top: 1px solid #1e293b; display: flex; flex-direction: column; gap: 0.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            <span style="font-size: 0.74rem; color: #94a3b8;"><strong>#Affiliate</strong> &bull; #Ad &bull; Official Brand Store</span>
+            <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.84rem; padding: 0.55rem 0.95rem; border-radius: 8px; text-decoration: none; min-height: 40px; display: inline-flex; align-items: center; justify-content: center;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
           </div>
-          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored nofollow noopener" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.42rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>
+          <a href="${this.escapeHtml(detailHref)}" style="display: block; text-align: center; background: #0f172a; border: 1px solid #334155; color: #cbd5e1; font-weight: 600; font-size: 0.78rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">Ingredients, Video Reviews &amp; Who Should Skip &rarr;</a>
+          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored nofollow noopener" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>
         </div>
       </div>
     `;
@@ -1161,21 +1279,29 @@ export class StaticSiteGenerator {
   </script>` : ''}
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
-    header { border-bottom: 1px solid var(--border); padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1100px; margin: 0 auto; }
-    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.15rem; }
-    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; overflow-x: hidden; }
+    header { border-bottom: 1px solid var(--border); padding: 1.1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; max-width: 1100px; margin: 0 auto; gap: 0.75rem; flex-wrap: wrap; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.05rem; }
+    header nav { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.88rem; }
     header nav a:hover, header nav a.active { color: var(--accent); font-weight: 600; }
-    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
-    .hero { text-align: center; max-width: 760px; margin: 0 auto 2.5rem auto; }
-    .hero h1 { font-size: 2.2rem; color: #fff; margin-bottom: 0.5rem; }
-    .hero p { color: #94a3b8; font-size: 1rem; }
-    .deals-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 3rem; }
-    .disclosure-box { background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.25); border-radius: 12px; padding: 1.25rem; font-size: 0.85rem; color: #94a3b8; margin: 3rem 0; }
-    footer { border-top: 1px solid var(--border); padding: 3rem 1.5rem; margin-top: 4rem; text-align: center; font-size: 0.88rem; color: #64748b; }
-    footer nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 1.25rem; margin-bottom: 1rem; }
+    main { max-width: 1100px; margin: 1.75rem auto; padding: 0 1.25rem; }
+    .hero { text-align: center; max-width: 760px; margin: 0 auto 2rem auto; }
+    .hero h1 { font-size: 2rem; color: #fff; margin-bottom: 0.5rem; line-height: 1.25; }
+    .hero p { color: #94a3b8; font-size: 0.95rem; }
+    .deals-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.25rem; margin-bottom: 2.5rem; }
+    .disclosure-box { background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.25); border-radius: 12px; padding: 1.15rem; font-size: 0.85rem; color: #94a3b8; margin: 2.5rem 0; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.25rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; }
     footer a { color: #94a3b8; text-decoration: none; }
     footer a:hover { color: var(--accent); }
+    @media (max-width: 640px) {
+      header { padding: 0.9rem 1rem; }
+      main { padding: 0 0.85rem; margin: 1.1rem auto; }
+      .hero h1 { font-size: 1.48rem; }
+      .deals-grid { grid-template-columns: 1fr; gap: 1rem; }
+    }
   </style>
 </head>
 <body>
@@ -1190,14 +1316,14 @@ export class StaticSiteGenerator {
   </header>
   <main>
     <div class="hero">
-      <span style="display: inline-block; font-size: 0.75rem; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.25rem 0.75rem; border-radius: 9999px; margin-bottom: 0.75rem;">#AD &bull; MERCHANT DEAL SNAPSHOTS</span>
-      <h1>Curated Commercial Offers for Indian Buyers</h1>
-      <p>Promotional prices and reference MRPs shown below reflect merchant-reported snapshots observed at sync time. Prices and availability can change at any time; confirm final terms on the official merchant checkout page.</p>
+      <span style="display: inline-block; font-size: 0.75rem; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.25rem 0.75rem; border-radius: 9999px; margin-bottom: 0.75rem;">#AFFILIATE &bull; #AD &bull; INGREDIENT &amp; ₹/ML VALUE GUIDE</span>
+      <h1>India Skincare Serum Deals &amp; Cost-per-ml Guide</h1>
+      <p>Side-by-side verified Indian D2C pricing, pack sizes (ml), cost per ml (₹/ml), key actives, and fragrance profiles so you can compare formulas before buying.</p>
     </div>
-    <section id="fair-price-checker-ssr" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem;">
+    <section id="fair-price-checker-ssr" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 2rem;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
-        <h2 style="margin: 0; font-size: 1.15rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Link Monetizer</h2>
-        <span style="font-size: 0.78rem; color: #94a3b8;">Observed MRP · Coupon Stacking · Top Marketplaces &amp; Partner Stores</span>
+        <h2 style="margin: 0; font-size: 1.1rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Price-Drop Alert</h2>
+        <span style="font-size: 0.78rem; color: #94a3b8;">Observed MRP &bull; Unit Cost (₹/ml) &bull; Official Brand Stores</span>
       </div>
       <p style="margin: 0 0 0.9rem 0; font-size: 0.88rem; color: #94a3b8;">
         Paste any Indian product URL (marketplace or D2C flagship store) or search any product to check fair market price, stacked coupon savings, and set a target price-drop alert.
@@ -1346,7 +1472,6 @@ export class StaticSiteGenerator {
       }
     }
   </script>
-  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }
@@ -1480,19 +1605,21 @@ export class StaticSiteGenerator {
     };
 
     const rawSpecs: Array<[string, string]> = [];
+    const detailUnit = getUnitCostDisplay(deal);
+    const detailImageUrl = getProductImageUrl(deal);
+    const mergedSpecMap = getRawSpecsMap(deal);
     if (deal.brand) rawSpecs.push(['Brand', String(deal.brand)]);
     if (deal.category) rawSpecs.push(['Category', String(deal.category)]);
     rawSpecs.push(['Merchant', String(deal.merchant || 'Verified Merchant')]);
     rawSpecs.push(['Observed Price', `₹${priceNum.toLocaleString('en-IN')} ${deal.currency || 'INR'}`]);
+    if (detailUnit.volumeLabel) rawSpecs.push(['Net Volume', detailUnit.volumeLabel]);
+    if (detailUnit.pricePerMlLabel) rawSpecs.push(['Cost per ml', detailUnit.pricePerMlLabel]);
     if (refNum > priceNum) rawSpecs.push(['Reference MRP', `₹${refNum.toLocaleString('en-IN')} (-${savingsPct}%)`]);
-    rawSpecs.push(['Stock State', String(deal.availability || 'UNKNOWN')]);
-    rawSpecs.push(['Verification Gate', `${deal.productVerified === true ? 'Product Verified' : 'Unverified Product'} / ${deal.affiliateVerified === true ? 'Affiliate Verified' : 'Unverified Affiliate'}`]);
-    rawSpecs.push(['Last Verified Snapshot', verifiedTs || 'Verification timestamp unavailable']);
-    if (deal.specs && typeof deal.specs === 'object') {
-      for (const [k, v] of Object.entries(deal.specs)) {
-        if (v !== null && v !== undefined && String(v).trim().length > 0) {
-          rawSpecs.push([String(k), String(v)]);
-        }
+    rawSpecs.push(['Availability', String(deal.availability || 'UNKNOWN')]);
+    rawSpecs.push(['Price Checked', formatHumanVerifiedDate(verifiedTs)]);
+    for (const [k, v] of Object.entries(mergedSpecMap)) {
+      if (!rawSpecs.some(([ek]) => ek.toLowerCase() === k.toLowerCase())) {
+        rawSpecs.push([k, v]);
       }
     }
     const specsRowsHtml = rawSpecs.map(([k, v]) =>
@@ -1504,20 +1631,27 @@ export class StaticSiteGenerator {
       const iSlug = item.slug || item.canonicalSlug || item.id;
       const iPrice = Number(item.currentPriceINR || 0);
       const iRef = Number(item.referencePriceINR || 0);
-      const iDisc = iRef > iPrice && iRef > 0 ? `${Math.round(((iRef - iPrice) / iRef) * 100)}% off` : 'Baseline MRP';
+      const iDisc = iRef > iPrice && iRef > 0 ? `${Math.round(((iRef - iPrice) / iRef) * 100)}% off` : 'MRP Direct';
+      const iUnit = getUnitCostDisplay(item);
       return `<tr style="${idx === 0 ? 'background:rgba(56,189,248,0.08);' : ''}">
         <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;">${idx === 0 ? `<strong>${this.escapeHtml(item.title)}</strong> <span style="font-size:0.75rem;color:#38bdf8;">(Selected)</span>` : `<a href="/deals/${this.escapeHtml(encodeURIComponent(iSlug))}" style="color:#e2e8f0;text-decoration:none;">${this.escapeHtml(item.title)}</a>`}</td>
         <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;color:#cbd5e1;">${this.escapeHtml(item.merchant || '-')}</td>
-        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;font-weight:700;color:#fff;">₹${iPrice.toLocaleString('en-IN')}</td>
+        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;font-weight:700;color:#fff;">₹${iPrice.toLocaleString('en-IN')}${iUnit.pricePerMlLabel ? `<div style="font-size:0.72rem;color:#67e8f9;font-weight:600;">${this.escapeHtml(iUnit.pricePerMlLabel)}</div>` : ''}</td>
         <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;color:#6ee7b7;">${this.escapeHtml(iDisc)}</td>
         <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;color:#94a3b8;font-size:0.85rem;">${this.escapeHtml(item.targetBuyerSegment || item.category || 'General Buyers')}</td>
       </tr>`;
     }).join('');
 
-    const buyerFitText = deal.targetBuyerSegment
-      ? `Ideal for ${deal.targetBuyerSegment} seeking ${deal.category || 'this category'} hardware at ₹${priceNum.toLocaleString('en-IN')}${refNum > priceNum ? ` (Merchant Listed MRP ₹${refNum.toLocaleString('en-IN')})` : ''}.`
-      : `Best suited for value-focused buyers in ${deal.category || 'consumer tech'} confirming live merchant checkout pricing of ₹${priceNum.toLocaleString('en-IN')}.`;
-    const skipFitText = `Skip if you require an alternate merchant warranty policy, immediate local retail pickup today, or if live merchant cart pricing exceeds the verified ₹${priceNum.toLocaleString('en-IN')} snapshot.`;
+    const buyerFitText =
+      deal.buyerFitSummary ||
+      deal.evidenceJson?.buyerFitSummary ||
+      (deal.targetBuyerSegment
+        ? `Ideal for ${deal.targetBuyerSegment} at ₹${priceNum.toLocaleString('en-IN')}${detailUnit.pricePerMlLabel ? ` (${detailUnit.pricePerMlLabel})` : ''}.`
+        : `Best suited for value-focused buyers confirming live merchant checkout pricing of ₹${priceNum.toLocaleString('en-IN')}.`);
+    const skipFitText =
+      deal.skipFitSummary ||
+      deal.evidenceJson?.skipFitSummary ||
+      `Skip if you require an alternate merchant return policy or live cart pricing exceeds ₹${priceNum.toLocaleString('en-IN')}.`;
     const verifiedRateDisclosure =
       typeof deal.verifiedCommissionRatePercent === 'number' && Number.isFinite(deal.verifiedCommissionRatePercent)
         ? `Recorded merchant campaign rate: ${deal.verifiedCommissionRatePercent}% via Cuelinks Channel 331585.`
@@ -1563,16 +1697,25 @@ ${this.serializeSafeJsonLd(productSchema, true)}
   </script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
-    header { border-bottom: 1px solid var(--border); padding: 1.15rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1040px; margin: 0 auto; }
-    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
-    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
-    main { max-width: 1040px; margin: 2rem auto; padding: 0 1.5rem; }
-    .deal-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 2rem; margin-bottom: 2rem; }
-    .cta-btn { display: inline-block; background: #06b6d4; color: #020617; font-weight: 800; padding: 0.9rem 1.75rem; border-radius: 10px; text-decoration: none; font-size: 1rem; margin-top: 1rem; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; overflow-x: hidden; }
+    header { border-bottom: 1px solid var(--border); padding: 1.1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; max-width: 1040px; margin: 0 auto; gap: 0.75rem; flex-wrap: wrap; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.05rem; }
+    header nav { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.88rem; }
+    main { max-width: 1040px; margin: 1.75rem auto; padding: 0 1.25rem; }
+    .deal-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.75rem; margin-bottom: 2rem; }
+    .cta-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; background: #06b6d4; color: #020617; font-weight: 800; padding: 0.85rem 1.5rem; border-radius: 10px; text-decoration: none; font-size: 0.95rem; margin-top: 0; }
     .related-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 1rem; }
-    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.5rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.25rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
     footer a { color: #94a3b8; text-decoration: none; }
+    @media (max-width: 640px) {
+      header { padding: 0.9rem 1rem; }
+      main { padding: 0 0.85rem; margin: 1.1rem auto; }
+      .deal-box { padding: 1.15rem; }
+      h1 { font-size: 1.38rem !important; }
+      .cta-btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -1580,7 +1723,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
     <nav>
       <a href="/deals">All Verified Deals</a>
-      <a href="/tools/site-audit">SiteFix Audit</a>
+      <a href="/best/niacinamide-serums-india">Niacinamide Guide</a>
       <a href="/public/disclosure">Disclosure</a>
     </nav>
   </header>
@@ -1590,18 +1733,27 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     </div>
     <article class="deal-box">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.85rem;">
-        <span style="font-size:0.8rem;font-weight:700;color:#38bdf8;text-transform:uppercase;">#Ad &bull; ${this.escapeHtml(deal.merchant)} &bull; ${this.escapeHtml(deal.availability || 'IN_STOCK')}</span>
+        <span style="font-size:0.8rem;font-weight:700;color:#38bdf8;text-transform:uppercase;">#Affiliate &bull; #Ad &bull; ${this.escapeHtml(deal.merchant)} &bull; ${this.escapeHtml(deal.availability || 'IN_STOCK')}</span>
         ${hasPriceDrop ? `<span style="font-size:0.78rem;background:rgba(16,185,129,0.2);color:#6ee7b7;border:1px solid rgba(16,185,129,0.35);padding:0.25rem 0.65rem;border-radius:9999px;">Verified Price Drop</span>` : ''}
       </div>
-      <h1 style="font-size:1.85rem;color:#fff;margin:0 0 0.75rem 0;line-height:1.3;">${this.escapeHtml(deal.title)}</h1>
-      ${deal.targetBuyerSegment ? `<div style="font-size:0.9rem;color:#cbd5e1;background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:1.25rem;">Target Buyer Segment: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
+      ${detailImageUrl ? `
+      <div style="background:#090d16;border:1px solid #1e293b;border-radius:12px;padding:1rem;margin-bottom:1.15rem;text-align:center;">
+        <img src="${this.escapeHtml(detailImageUrl)}" alt="${this.escapeHtml(deal.title)}" style="max-height:240px;width:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto;border-radius:8px;">
+      </div>` : ''}
+      <h1 style="font-size:1.8rem;color:#fff;margin:0 0 0.75rem 0;line-height:1.3;">${this.escapeHtml(deal.title)}</h1>
+      ${(detailUnit.volumeLabel || detailUnit.pricePerMlLabel) ? `
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.85rem;">
+        ${detailUnit.volumeLabel ? `<span style="font-size:0.8rem;font-weight:700;color:#e2e8f0;background:#0f172a;border:1px solid #334155;padding:0.25rem 0.65rem;border-radius:7px;">Pack Size: ${this.escapeHtml(detailUnit.volumeLabel)}</span>` : ''}
+        ${detailUnit.pricePerMlLabel ? `<span style="font-size:0.8rem;font-weight:700;color:#67e8f9;background:rgba(6,182,212,0.12);border:1px solid rgba(6,182,212,0.35);padding:0.25rem 0.65rem;border-radius:7px;">Unit Cost: ${this.escapeHtml(detailUnit.pricePerMlLabel)}</span>` : ''}
+      </div>` : ''}
+      ${deal.targetBuyerSegment ? `<div style="font-size:0.9rem;color:#cbd5e1;background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:1.15rem;">Best Suited For: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
       <div style="display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;margin:1rem 0;">
-        <span style="font-size:2.35rem;font-weight:800;color:#fff;">₹${priceNum.toLocaleString('en-IN')}</span>
-        ${refNum > priceNum ? `<span style="font-size:1.05rem;color:#64748b;text-decoration:line-through;">Merchant Listed MRP ₹${refNum.toLocaleString('en-IN')}</span>` : ''}
-        <span style="font-size:0.9rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
+        <span style="font-size:2.2rem;font-weight:800;color:#fff;">₹${priceNum.toLocaleString('en-IN')}</span>
+        ${refNum > priceNum ? `<span style="font-size:1rem;color:#64748b;text-decoration:line-through;">Merchant Listed MRP ₹${refNum.toLocaleString('en-IN')}</span>` : ''}
+        <span style="font-size:0.88rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
       </div>
-      <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
-        Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(isSeedFallbackDeal(deal) ? 'SEED_SNAPSHOT' : (deal.verificationStatus || 'VERIFIED'))}</strong>
+      <p style="font-size:0.86rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
+        Price Checked: <strong>${this.escapeHtml(formatHumanVerifiedDate(verifiedTs))}</strong> &bull; Status: <strong>${this.escapeHtml(formatStockStatusLabel(deal))}</strong>
       </p>
       ${(() => {
         const reviews = Array.isArray((deal as any).youtubeReviews) && (deal as any).youtubeReviews.length > 0
@@ -1686,7 +1838,6 @@ ${this.serializeSafeJsonLd(productSchema, true)}
   <footer>
     <p><a href="/deals">All Verified Deals</a> &bull; <a href="/sitemap.xml">Sitemap</a> &bull; <a href="/public/disclosure">Affiliate Disclosure</a></p>
   </footer>
-  ${renderCustomerDeskWidgetHtml(deal.slug || deal.canonicalSlug || deal.id || '')}
 </body>
 </html>`;
   }
@@ -1707,9 +1858,21 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     const title = `${a.title} vs ${b.title} — Price & Spec Comparison | ${config.siteName}`;
     const priceA = Number(a.currentPriceINR || 0);
     const priceB = Number(b.currentPriceINR || 0);
-    const tsA = String(a.lastVerifiedAt || a.lastCheckedAt || a.updatedAt || '');
-    const tsB = String(b.lastVerifiedAt || b.lastCheckedAt || b.updatedAt || '');
-    const description = `Compare ${a.title} (₹${priceA.toLocaleString('en-IN')}) vs ${b.title} (₹${priceB.toLocaleString('en-IN')}) in ${pair.category} with verified D2C pricing and live Amazon.in coupon checks.`;
+    const tsA = formatHumanVerifiedDate(String(a.lastVerifiedAt || a.lastCheckedAt || a.updatedAt || ''));
+    const tsB = formatHumanVerifiedDate(String(b.lastVerifiedAt || b.lastCheckedAt || b.updatedAt || ''));
+    const unitA = getUnitCostDisplay(a);
+    const unitB = getUnitCostDisplay(b);
+    const imgA = getProductImageUrl(a);
+    const imgB = getProductImageUrl(b);
+    const specsA = getRawSpecsMap(a);
+    const specsB = getRawSpecsMap(b);
+    const isSkincareCompare =
+      inferDealSubCategory(a) === 'face-serum' ||
+      inferDealSubCategory(b) === 'face-serum' ||
+      /beauty|skin/i.test(String(a.category || b.category || ''));
+    const fitBuyA = a.buyerFitSummary || a.evidenceJson?.buyerFitSummary || a.targetBuyerSegment || (isSkincareCompare ? 'Daily active skincare routine buyers' : 'General value buyers');
+    const fitBuyB = b.buyerFitSummary || b.evidenceJson?.buyerFitSummary || b.targetBuyerSegment || (isSkincareCompare ? 'Daily active skincare routine buyers' : 'General value buyers');
+    const description = `Compare ${a.title} (₹${priceA.toLocaleString('en-IN')}${unitA.pricePerMlLabel ? `, ${unitA.pricePerMlLabel}` : ''}) vs ${b.title} (₹${priceB.toLocaleString('en-IN')}${unitB.pricePerMlLabel ? `, ${unitB.pricePerMlLabel}` : ''}) with key ingredients, cost per ml, and verified store links.`;
 
     const rail1A = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(a.id)}/redirect?utm_source=vs_compare`;
     const rail1B = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(b.id)}/redirect?utm_source=vs_compare`;
@@ -1763,16 +1926,25 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
   </script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
-    header { border-bottom: 1px solid var(--border); padding: 1.15rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1040px; margin: 0 auto; }
-    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
-    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
-    main { max-width: 1040px; margin: 2rem auto; padding: 0 1.5rem; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; overflow-x: hidden; }
+    header { border-bottom: 1px solid var(--border); padding: 1.1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; max-width: 1040px; margin: 0 auto; gap: 0.75rem; flex-wrap: wrap; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.05rem; }
+    header nav { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.88rem; }
+    main { max-width: 1040px; margin: 1.75rem auto; padding: 0 1.25rem; }
     table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     th, td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     th { background: #0f172a; color: #94a3b8; font-size: 0.84rem; width: 22%; }
-    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.5rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.25rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
     footer a { color: #94a3b8; text-decoration: none; }
+    @media (max-width: 640px) {
+      header { padding: 0.9rem 1rem; }
+      main { padding: 0 0.85rem; margin: 1.1rem auto; }
+      h1 { font-size: 1.35rem !important; }
+      th, td { padding: 0.55rem 0.6rem; font-size: 0.8rem; }
+      th { width: 26%; }
+    }
   </style>
 </head>
 <body>
@@ -1780,6 +1952,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
     <nav>
       <a href="/deals">Verified Deals</a>
+      <a href="/best/niacinamide-serums-india">Niacinamide Guide</a>
       <a href="/public/disclosure">Disclosure</a>
     </nav>
   </header>
@@ -1787,7 +1960,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     <div style="font-size:0.84rem;color:#94a3b8;margin-bottom:0.85rem;">
       <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals</a> &rsaquo; <span>${this.escapeHtml(pair.category)}</span> &rsaquo; <span>${this.escapeHtml(pair.priceTierLabel)}</span>
     </div>
-    <span style="display:inline-block;font-size:0.74rem;font-weight:700;color:${hasSeedFallback ? '#fcd34d' : '#38bdf8'};background:${hasSeedFallback ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)'};border:1px solid ${hasSeedFallback ? 'rgba(245,158,11,0.35)' : 'rgba(56,189,248,0.3)'};padding:0.2rem 0.65rem;border-radius:9999px;margin-bottom:0.75rem;">#Ad &bull; ${hasSeedFallback ? 'SEED_SNAPSHOT &bull; ' : ''}HEAD-TO-HEAD COMPARISON</span>
+    <span style="display:inline-block;font-size:0.74rem;font-weight:700;color:${hasSeedFallback ? '#fcd34d' : '#38bdf8'};background:${hasSeedFallback ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)'};border:1px solid ${hasSeedFallback ? 'rgba(245,158,11,0.35)' : 'rgba(56,189,248,0.3)'};padding:0.2rem 0.65rem;border-radius:9999px;margin-bottom:0.75rem;">#Affiliate &bull; #Ad &bull; ${hasSeedFallback ? 'SEED_SNAPSHOT &bull; ' : ''}HEAD-TO-HEAD COMPARISON</span>
     <h1 style="font-size:1.75rem;color:#fff;margin:0 0 0.75rem 0;">${this.escapeHtml(a.title)} vs ${this.escapeHtml(b.title)}</h1>
     <p style="color:#94a3b8;font-size:0.95rem;margin-bottom:1.5rem;">${this.escapeHtml(description)}</p>
 
@@ -1796,20 +1969,41 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         <thead>
           <tr>
             <th>Attribute</th>
-            <th style="width:39%;color:#fff;font-size:1rem;"><a href="/deals/${this.escapeHtml(encodeURIComponent(a.slug || a.canonicalSlug || a.id))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(a.title)}</a></th>
-            <th style="width:39%;color:#fff;font-size:1rem;"><a href="/deals/${this.escapeHtml(encodeURIComponent(b.slug || b.canonicalSlug || b.id))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(b.title)}</a></th>
+            <th style="width:39%;color:#fff;font-size:0.95rem;">
+              ${imgA ? `<img src="${this.escapeHtml(imgA)}" alt="${this.escapeHtml(a.title)}" loading="lazy" style="max-height:110px;width:auto;max-width:100%;object-fit:contain;display:block;margin-bottom:0.5rem;border-radius:6px;background:#090d16;padding:4px;">` : ''}
+              <a href="/deals/${this.escapeHtml(encodeURIComponent(a.slug || a.canonicalSlug || a.id))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(a.title)}</a>
+            </th>
+            <th style="width:39%;color:#fff;font-size:0.95rem;">
+              ${imgB ? `<img src="${this.escapeHtml(imgB)}" alt="${this.escapeHtml(b.title)}" loading="lazy" style="max-height:110px;width:auto;max-width:100%;object-fit:contain;display:block;margin-bottom:0.5rem;border-radius:6px;background:#090d16;padding:4px;">` : ''}
+              <a href="/deals/${this.escapeHtml(encodeURIComponent(b.slug || b.canonicalSlug || b.id))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(b.title)}</a>
+            </th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <th>Verified D2C Price</th>
-            <td><strong style="font-size:1.3rem;color:#34d399;">₹${priceA.toLocaleString('en-IN')}</strong><div style="font-size:0.75rem;color:#94a3b8;">Observed: <code>${this.escapeHtml(tsA)}</code></div></td>
-            <td><strong style="font-size:1.3rem;color:#34d399;">₹${priceB.toLocaleString('en-IN')}</strong><div style="font-size:0.75rem;color:#94a3b8;">Observed: <code>${this.escapeHtml(tsB)}</code></div></td>
+            <th>Verified Price &amp; Cost/ml</th>
+            <td><strong style="font-size:1.25rem;color:#34d399;">₹${priceA.toLocaleString('en-IN')}</strong>${unitA.pricePerMlLabel ? ` <span style="font-size:0.78rem;color:#67e8f9;font-weight:700;">(${this.escapeHtml(unitA.volumeLabel)} &bull; ${this.escapeHtml(unitA.pricePerMlLabel)})</span>` : ''}<div style="font-size:0.75rem;color:#94a3b8;">Checked ${this.escapeHtml(tsA)}</div></td>
+            <td><strong style="font-size:1.25rem;color:#34d399;">₹${priceB.toLocaleString('en-IN')}</strong>${unitB.pricePerMlLabel ? ` <span style="font-size:0.78rem;color:#67e8f9;font-weight:700;">(${this.escapeHtml(unitB.volumeLabel)} &bull; ${this.escapeHtml(unitB.pricePerMlLabel)})</span>` : ''}<div style="font-size:0.75rem;color:#94a3b8;">Checked ${this.escapeHtml(tsB)}</div></td>
+          </tr>
+          <tr>
+            <th>Key Actives</th>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml(specsA['Key Ingredients'] || a.category || '-')}</td>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml(specsB['Key Ingredients'] || b.category || '-')}</td>
+          </tr>
+          <tr>
+            <th>${isSkincareCompare ? 'Texture &amp; Fragrance' : 'Key Specifications'}</th>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml([specsA['Texture & Finish'], specsA['Fragrance Profile']].filter(Boolean).join(' • ') || (isSkincareCompare ? 'Light serum' : 'See product specs'))}</td>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml([specsB['Texture & Finish'], specsB['Fragrance Profile']].filter(Boolean).join(' • ') || (isSkincareCompare ? 'Light serum' : 'See product specs'))}</td>
+          </tr>
+          <tr>
+            <th>Best For</th>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml(fitBuyA)}</td>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml(fitBuyB)}</td>
           </tr>
           <tr>
             <th>Reference List MRP</th>
-            <td>${Number(a.referencePriceINR || 0) > priceA ? `₹${Number(a.referencePriceINR).toLocaleString('en-IN')} (${a.verifiedDiscountPercent || a.claimedDiscountPercent || 0}% off)` : 'Verified Direct'}</td>
-            <td>${Number(b.referencePriceINR || 0) > priceB ? `₹${Number(b.referencePriceINR).toLocaleString('en-IN')} (${b.verifiedDiscountPercent || b.claimedDiscountPercent || 0}% off)` : 'Verified Direct'}</td>
+            <td>${Number(a.referencePriceINR || 0) > priceA ? `₹${Number(a.referencePriceINR).toLocaleString('en-IN')} (${a.verifiedDiscountPercent || a.claimedDiscountPercent || 0}% off)` : 'MRP Direct'}</td>
+            <td>${Number(b.referencePriceINR || 0) > priceB ? `₹${Number(b.referencePriceINR).toLocaleString('en-IN')} (${b.verifiedDiscountPercent || b.claimedDiscountPercent || 0}% off)` : 'MRP Direct'}</td>
           </tr>
           <tr>
             <th>Merchant &amp; Brand</th>
@@ -1864,7 +2058,6 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
   <footer>
     <p><a href="/deals">All Verified Deals</a> &bull; <a href="/sitemap.xml">Sitemap</a> &bull; <a href="/public/disclosure">Affiliate Disclosure</a></p>
   </footer>
-  ${renderCustomerDeskWidgetHtml(pair.comparisonSlug || pair.dealA?.slug || '')}
 </body>
 </html>`;
   }
@@ -1928,25 +2121,30 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
       const slug = d.slug || d.canonicalSlug || d.id;
       const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_pick`;
       const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
+      const unitInfo = getUnitCostDisplay(d);
+      const imgUrl = getProductImageUrl(d);
       return `
       <div style="background:#111827;border:1px solid #1e293b;border-radius:10px;padding:1rem;display:flex;flex-direction:column;justify-content:space-between;gap:0.6rem;">
         <div>
           <div style="font-size:0.74rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.35rem;">${this.escapeHtml(label)}</div>
+          ${imgUrl ? `<a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="display:block;background:#090d16;border:1px solid #1e293b;border-radius:8px;padding:0.5rem;margin-bottom:0.55rem;text-align:center;"><img src="${this.escapeHtml(imgUrl)}" alt="${this.escapeHtml(d.title)}" loading="lazy" style="max-height:140px;width:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto;"></a>` : ''}
           <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;font-size:0.95rem;text-decoration:none;display:block;margin-bottom:0.35rem;">${this.escapeHtml(d.title)}</a>
-          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(d.category || hub.categoryLabel)}</div>
+          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(unitInfo.volumeLabel || d.category || hub.categoryLabel)}${unitInfo.pricePerMlLabel ? ` &bull; <strong style="color:#67e8f9;">${this.escapeHtml(unitInfo.pricePerMlLabel)}</strong>` : ''}</div>
           <div style="font-size:1.25rem;font-weight:800;color:#34d399;font-variant-numeric:tabular-nums;">₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
           ${Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0) ? `<div style="font-size:0.75rem;color:#94a3b8;font-variant-numeric:tabular-nums;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:0.4rem;">
-          <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.48rem 0.75rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Buy at Official Store (#Ad) &rarr;</a>
-          <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.4rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+          <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.75rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
+          <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.45rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
         </div>
       </div>`;
     };
 
     const rowsHtml = deals.map((d: any, idx: number) => {
       const slug = d.slug || d.canonicalSlug || d.id;
-      const observedAt = d.lastVerifiedAt || d.lastCheckedAt || d.updatedAt || '';
+      const observedAt = formatHumanVerifiedDate(d.lastVerifiedAt || d.lastCheckedAt || d.updatedAt || '');
+      const unitInfo = getUnitCostDisplay(d);
+      const specs = getRawSpecsMap(d);
       const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_table`;
       const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
       const hasMrp = Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0);
@@ -1955,16 +2153,18 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         <td style="font-weight:700;color:#94a3b8;font-variant-numeric:tabular-nums;">#${idx + 1}</td>
         <td>
           <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;text-decoration:none;display:block;">${this.escapeHtml(d.title)}</a>
-          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
-          ${observedAt ? `<div style="font-size:0.74rem;color:#64748b;margin-top:0.15rem;">Observed At: <code>${this.escapeHtml(observedAt)}</code></div>` : ''}
+          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${unitInfo.pricePerMlLabel ? ` &bull; <strong style="color:#67e8f9;">${this.escapeHtml(unitInfo.pricePerMlLabel)}</strong>` : ''}${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
+          ${specs['Key Ingredients'] ? `<div style="font-size:0.74rem;color:#cbd5e1;margin-top:0.18rem;">Actives: ${this.escapeHtml(specs['Key Ingredients'])}</div>` : ''}
+          ${observedAt ? `<div style="font-size:0.74rem;color:#64748b;margin-top:0.15rem;">Checked ${this.escapeHtml(observedAt)}</div>` : ''}
         </td>
         <td style="font-variant-numeric:tabular-nums;">
           <div style="font-size:1.05rem;font-weight:800;color:#34d399;">₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
-          ${hasMrp ? `<div style="font-size:0.75rem;color:#94a3b8;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
+          ${unitInfo.volumeLabel ? `<div style="font-size:0.74rem;color:#67e8f9;">${this.escapeHtml(unitInfo.volumeLabel)}</div>` : ''}
+          ${hasMrp ? `<div style="font-size:0.75rem;color:#94a3b8;">MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
         </td>
         <td>
-          <div style="display:flex;flex-direction:column;gap:0.4rem;min-width:210px;">
-            <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.45rem 0.7rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Ad) &rarr;</a>
+          <div style="display:flex;flex-direction:column;gap:0.4rem;min-width:190px;">
+            <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.45rem 0.7rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
             <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.38rem 0.6rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
           </div>
         </td>
@@ -1996,17 +2196,25 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
   </script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
-    header { border-bottom: 1px solid var(--border); padding: 1.15rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1080px; margin: 0 auto; }
-    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
-    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
-    main { max-width: 1080px; margin: 2rem auto; padding: 0 1.5rem; }
-    h1 { text-wrap: balance; font-size: 1.9rem; color: #fff; margin: 0 0 0.6rem 0; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; overflow-x: hidden; }
+    header { border-bottom: 1px solid var(--border); padding: 1.1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; max-width: 1080px; margin: 0 auto; gap: 0.75rem; flex-wrap: wrap; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.05rem; }
+    header nav { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.88rem; }
+    main { max-width: 1080px; margin: 1.75rem auto; padding: 0 1.25rem; }
+    h1 { text-wrap: balance; font-size: 1.85rem; color: #fff; margin: 0 0 0.6rem 0; }
     table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     th, td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     th { background: #0f172a; color: #94a3b8; font-size: 0.82rem; }
-    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.5rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.25rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
     footer a { color: #94a3b8; text-decoration: none; }
+    @media (max-width: 640px) {
+      header { padding: 0.9rem 1rem; }
+      main { padding: 0 0.85rem; margin: 1.1rem auto; }
+      h1 { font-size: 1.38rem; }
+      th, td { padding: 0.55rem 0.6rem; font-size: 0.8rem; }
+    }
   </style>
 </head>
 <body>
@@ -2134,7 +2342,6 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
       }
     }
   </script>
-  ${renderCustomerDeskWidgetHtml(hub.intentSlug)}
 </body>
 </html>`;
   }
@@ -2288,7 +2495,6 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
-  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }

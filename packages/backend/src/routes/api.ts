@@ -10316,9 +10316,69 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
 
   if (dealId) {
     try {
-      const db = getDb();
-      db.prepare(`INSERT OR IGNORE INTO referral_click_events (id, referral_id, partner_id, offer_id, click_status, created_at) VALUES (?, ?, 'part_amazon_in', ?, 'OUTBOUND_DUAL_RAIL', datetime('now'))`)
-        .run(clickId, `ref_${clickId}`, dealId);
+      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+      const d1Repo = D1RevenueRepository.getInstance();
+      const orgId = 'org_owner_primary';
+      const referralId = `ref_${clickId}`;
+      const clientInfo = getTrustedClientIp(c);
+      const userAgent = c.req.header('user-agent') || '';
+      const referrer = c.req.header('referer') || '';
+      const { classifyTraffic } = await import('../commission/referral-tracking.js');
+      const trafficClass = classifyTraffic(userAgent, clientInfo.ip, {
+        'x-diagnostic': c.req.header('x-diagnostic') || '',
+        'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
+        'x-test-traffic': c.req.header('x-test-traffic') || '',
+        'x-test-mode': c.req.header('x-test-mode') || ''
+      });
+      const insertRefSql = `
+        INSERT OR IGNORE INTO referrals (
+          id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `;
+      const insertClickSql = `
+        INSERT OR IGNORE INTO referral_click_events (
+          id, referral_id, click_id, organization_id, offer_id, partner_id,
+          placement, source, medium, campaign, referrer, device_class, destination_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `;
+      await d1Repo.executeBatch([
+        {
+          table: 'referrals',
+          sql: insertRefSql,
+          params: [
+            referralId,
+            clickId,
+            targetUrl,
+            orgId,
+            dealId,
+            'part_amazon_in',
+            clientInfo.ip,
+            userAgent.substring(0, 200),
+            referrer.substring(0, 200),
+            'amazon_dual_rail',
+            trafficClass
+          ]
+        },
+        {
+          table: 'referral_click_events',
+          sql: insertClickSql,
+          params: [
+            `evt_${clickId}`,
+            referralId,
+            clickId,
+            orgId,
+            dealId,
+            'part_amazon_in',
+            'amazon_dual_rail',
+            'amazon_redirect',
+            'cpc_affiliate',
+            'amazon_in_associates',
+            referrer.substring(0, 200),
+            trafficClass,
+            targetUrl
+          ]
+        }
+      ]);
       const abExp = c.req.query('ab_exp');
       const abVariant = c.req.query('ab_variant');
       if (abExp && (abVariant === 'baseline' || abVariant === 'treatment')) {
@@ -10327,11 +10387,13 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
           variant: abVariant,
           eventType: 'click',
           targetId: dealId,
-          userIdentifier: getTrustedClientIp(c).ip
+          userIdentifier: clientInfo.ip
         });
         ExperimentEngine.evaluateFromTelemetry(abExp);
       }
-    } catch {}
+    } catch (dbErr: any) {
+      console.warn(`[AmazonRedirect] Click attribution persistence warning: ${dbErr?.message || 'unknown error'}`);
+    }
   }
 
   return c.redirect(targetUrl, 302);
@@ -13415,6 +13477,21 @@ apiRouter.post('/owner/cuelinks/sync', async (c) => {
   const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
   const result = await CuelinksSyncManager.getInstance().syncCuelinks(orgId, bizId);
   return c.json({ success: result.success, data: result.status, reason: result.reason });
+});
+
+/**
+ * Publish PR #99 Verified Skincare Serums & Repair Historical Category Objects (Owner-only)
+ */
+apiRouter.post('/owner/skincare/publish', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const bizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  try {
+    const result = await AutonomousDealDiscoveryEngine.getInstance().publishVerifiedSkincareCatalog(orgId, bizId);
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message || 'PUBLISH_FAILED' }, 500);
+  }
 });
 
 /**

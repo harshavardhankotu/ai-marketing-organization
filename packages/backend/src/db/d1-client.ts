@@ -31,7 +31,9 @@ export const DURABLE_REQUIRED_TABLES = [
   'proposals',
   'platform_prospects',
   'opportunities',
-  'sales_pipeline'
+  'sales_pipeline',
+  'referrals',
+  'referral_click_events'
 ] as const;
 
 export function isFinancialSql(sql: string): boolean {

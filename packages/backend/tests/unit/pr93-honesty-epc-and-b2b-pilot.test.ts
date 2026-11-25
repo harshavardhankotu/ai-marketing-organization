@@ -142,7 +142,7 @@ describe('PR #93: Honesty Bugs, Daily D1 Budget, EPC Physical Engine & B2B Pilot
   describe('Part 1 Item 2: Static Timestamps & EPC Campaign Filtering', () => {
     it('uses explicit static timestamp and isSeedFallback on all starter deals without runtime new Date()', () => {
       const deals1 = createHighIntentStarterDeals();
-      expect(deals1.length).toBe(7);
+      expect(deals1.length).toBe(6);
 
       for (const d of deals1) {
         expect(d.isSeedFallback).toBe(true);
@@ -157,10 +157,11 @@ describe('PR #93: Honesty Bugs, Daily D1 Budget, EPC Physical Engine & B2B Pilot
       const saasDeals = deals1.filter(d => d.category === 'Software & SaaS' || d.merchant === 'AppSumo');
       expect(saasDeals.length).toBe(0);
 
-      // Verify physical product deals
-      expect(deals1.some(d => d.brand === 'mCaffeine')).toBe(true);
-      expect(deals1.some(d => d.brand === 'Beardo')).toBe(true);
+      // Verify physical skincare product deals
+      expect(deals1.some(d => d.brand === 'World of Asaya')).toBe(true);
+      expect(deals1.some(d => d.brand === 'Plum Goodness')).toBe(true);
       expect(deals1.some(d => d.brand === 'Dot & Key')).toBe(true);
+      expect(deals1.some(d => d.brand === 'Kama Ayurveda')).toBe(true);
     });
   });
 

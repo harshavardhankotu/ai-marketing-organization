@@ -102,8 +102,8 @@ app.use('*', async (c, next) => {
   const csp = [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.razorpay.com",
-    "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
-    "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
+    "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com",
+    "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com",
     "connect-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com https://*.razorpay.com",
     "img-src 'self' data: https: https://*.razorpay.com",
     "style-src 'self' 'unsafe-inline' https:",
@@ -116,8 +116,8 @@ app.use('*', async (c, next) => {
   const cspReportOnly = [
     "default-src 'self'",
     "script-src 'self' https://checkout.razorpay.com https://*.razorpay.com",
-    "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
-    "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
+    "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com",
+    "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com",
     "connect-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com https://*.razorpay.com",
     "img-src 'self' data: https: https://*.razorpay.com",
     "style-src 'self' 'unsafe-inline' https:",

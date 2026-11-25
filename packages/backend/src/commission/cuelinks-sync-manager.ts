@@ -28,6 +28,40 @@ import { DealCandidate } from './deal-types.js';
 
 export { CUELINKS_REQUIRED_SCOPES };
 
+/**
+ * Normalizes category payloads returned by Cuelinks API (string, object `{ name }`, or array)
+ * into a clean human-readable category label, never `[object Object]`.
+ */
+export function normalizeCuelinksCategory(
+  rawCategory: any,
+  categories?: any[],
+  fallback: string = 'General'
+): string {
+  const extract = (val: any): string => {
+    if (!val) return '';
+    if (typeof val === 'string') {
+      const cleaned = val.trim();
+      if (!cleaned || cleaned === '[object Object]' || cleaned.toLowerCase() === 'null' || cleaned.toLowerCase() === 'undefined') {
+        return '';
+      }
+      return cleaned;
+    }
+    if (Array.isArray(val)) {
+      for (const item of val) {
+        const picked = extract(item);
+        if (picked) return picked;
+      }
+      return '';
+    }
+    if (typeof val === 'object') {
+      return extract(val.name ?? val.title ?? val.category_name ?? val.label ?? val.category);
+    }
+    return '';
+  };
+
+  return extract(rawCategory) || extract(categories) || fallback;
+}
+
 function normalizeSyncRootDomain(urlOrDomain: string): string {
   const raw = String(urlOrDomain || '').trim().toLowerCase();
   if (!raw) return '';
@@ -557,13 +591,7 @@ export class CuelinksSyncManager {
       }
 
       // Category extraction
-      let categoryName = 'Retail Deals';
-      if (Array.isArray(offer.categories) && offer.categories.length > 0) {
-        const c0 = offer.categories[0];
-        categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'Retail Deals');
-      } else if (offer.category) {
-        categoryName = offer.category;
-      }
+      const categoryName = normalizeCuelinksCategory(offer.categories, [offer.category], 'Retail Deals');
 
       // Rule: Never invent an expiry date: if offer.end_date is omitted, expiryDate remains undefined.
       let expiryDate: string | undefined = undefined;
@@ -2434,7 +2462,7 @@ export class CuelinksSyncManager {
             safePayoutModel,
             safePayoutRate,
             cookieDuration,
-            (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
+            normalizeCuelinksCategory((camp as any).category, camp.categories, 'General')
           ]);
         } else {
           try {
@@ -2447,7 +2475,7 @@ export class CuelinksSyncManager {
               safePayoutModel,
               safePayoutRate,
               cookieDuration,
-              (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
+              normalizeCuelinksCategory((camp as any).category, camp.categories, 'General')
             );
           } catch {}
         }

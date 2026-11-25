@@ -202,6 +202,12 @@ export interface NormalizedDeal {
   targetBuyerSegment?: string;   // High-intent buyer persona matched without LLM tokens
   buyerIntentKeywords?: string[];
   buyerIntentHook?: string;
+  subCategory?: string;
+  unitVolumeMl?: number;
+  pricePerMlINR?: number;
+  imageUrl?: string;
+  buyerFitSummary?: string;
+  skipFitSummary?: string;
   rejectionReasons: string[];
   isMonetizable: boolean;
   isSeedFallback?: boolean;
