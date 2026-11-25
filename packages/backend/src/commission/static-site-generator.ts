@@ -90,7 +90,7 @@ function computeEvidenceDepth(d: any): number {
 
 function formatHumanVerifiedDate(rawTs?: string | null): string {
   const s = String(rawTs || '').trim();
-  if (!s) return 'Verified snapshot';
+  if (!s) return 'Verification timestamp unavailable';
   const parsed = Date.parse(s);
   if (Number.isNaN(parsed)) return s;
   return new Date(parsed).toLocaleDateString('en-IN', {
