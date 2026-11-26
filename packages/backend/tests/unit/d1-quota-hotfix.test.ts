@@ -1146,4 +1146,175 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       expect(deliverable.headMetadataSnippet).toBeTruthy();
     });
   });
+
+  describe('8. PR #82 Sitemap Strict Audit-Domain Read (No Empty Cache Poisoning)', () => {
+    it('throws in getAllAuditedDomains({ strict: true }) on read failure and avoids caching an incomplete /sitemap.xml', async () => {
+      const { default: app } = await import('../../src/index.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+
+      const auditService = SiteAuditService.getInstance();
+      const d1Repo = D1RevenueRepository.getInstance();
+      const cfgSpy = vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      const querySpy = vi.spyOn(d1Repo, 'query').mockImplementation(async (table: string) => {
+        if (table === 'site_audits') {
+          throw new Error('SIMULATED_D1_SITE_AUDITS_READ_ERROR');
+        }
+        return [];
+      });
+
+      // Opt-in strict mode must throw; default mode stays backwards compatible ([])
+      await expect(auditService.getAllAuditedDomains({ strict: true })).rejects.toThrow(
+        'SIMULATED_D1_SITE_AUDITS_READ_ERROR'
+      );
+      await expect(auditService.getAllAuditedDomains()).resolves.toEqual([]);
+
+      // First GET /sitemap.xml sees strict audit read failure -> MUST NOT cache incomplete sitemap
+      const getAllSpy = vi
+        .spyOn(auditService, 'getAllAuditedDomains')
+        .mockRejectedValueOnce(new Error('SIMULATED_SITEMAP_AUDIT_FAILURE'))
+        .mockResolvedValueOnce(['recovered-domain.example']);
+
+      const res1 = await app.request('/sitemap.xml');
+      expect(res1.status).toBe(200);
+      const xml1 = await res1.text();
+      expect(xml1).not.toContain('recovered-domain.example');
+      expect(getAllSpy).toHaveBeenCalledWith({ strict: true });
+
+      // Second GET /sitemap.xml must re-query (not serve cached incomplete XML) and include recovered domain
+      const res2 = await app.request('/sitemap.xml');
+      expect(res2.status).toBe(200);
+      const xml2 = await res2.text();
+      expect(xml2).toContain('/audit/recovered-domain.example');
+      expect(getAllSpy).toHaveBeenCalledTimes(2);
+
+      // Third GET /sitemap.xml now hits the healthy cache without calling getAllAuditedDomains again
+      const res3 = await app.request('/sitemap.xml');
+      expect(res3.status).toBe(200);
+      const xml3 = await res3.text();
+      expect(xml3).toContain('/audit/recovered-domain.example');
+      expect(getAllSpy).toHaveBeenCalledTimes(2);
+
+      cfgSpy.mockRestore();
+      querySpy.mockRestore();
+      getAllSpy.mockRestore();
+    });
+  });
+
+  describe('9. PR #82 TelegramBotAdapter Claim Ownership Guard', () => {
+    it('blocks publishing on claim lookup/insert failure, releases owned claim before reading body on deterministic 4xx, and preserves claims on 429/5xx/network errors', async () => {
+      const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+      const prevChannel = process.env.TELEGRAM_CHANNEL_ID;
+      const prevEnabled = process.env.TELEGRAM_ENABLED;
+
+      process.env.TELEGRAM_BOT_TOKEN = '123456789:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPP';
+      process.env.TELEGRAM_CHANNEL_ID = '-1001234567890';
+      process.env.TELEGRAM_ENABLED = 'true';
+
+      try {
+        TelegramBotAdapter.resetInstance();
+        const adapter = TelegramBotAdapter.getInstance();
+        const d1Repo = D1RevenueRepository.getInstance();
+
+        // Case A: Claim lookup failure -> MUST fail closed and NEVER call Telegram fetchFn or DELETE
+        const fetchMockA = vi.fn();
+        const queryOneSpyA = vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (_table, sql) => {
+          if (String(sql).includes('WHERE id = ?')) {
+            throw new Error('SIMULATED_D1_CLAIM_LOOKUP_FAILURE');
+          }
+          return { cnt: 0 } as any;
+        });
+        const writeSpyA = vi.spyOn(d1Repo, 'executeWrite').mockResolvedValue({ results: [], rowsAffected: 1, source: 'LOCAL_SQLITE' } as any);
+
+        const resA = await adapter.postPublishedGuide({
+          guideTitle: 'Claim Lookup Failure Test',
+          guideUrl: 'https://example.com/deal-a',
+          dealId: 'deal_claim_fail_lookup',
+          fetchFn: fetchMockA as any
+        });
+        expect(resA.posted).toBe(false);
+        expect(resA.reason).toContain('TELEGRAM_CLAIM_FAILED');
+        expect(fetchMockA).not.toHaveBeenCalled();
+        expect(writeSpyA).not.toHaveBeenCalled();
+        queryOneSpyA.mockRestore();
+        writeSpyA.mockRestore();
+
+        // Case B: Claim acquired + deterministic 400 -> MUST release claim BEFORE reading response body
+        const eventsOrder: string[] = [];
+        const queryOneSpyB = vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (_table, sql) => {
+          if (String(sql).includes('WHERE id = ?')) return null;
+          return { cnt: 0 } as any;
+        });
+        const writeSpyB = vi.spyOn(d1Repo, 'executeWrite').mockImplementation(async (_table, sql) => {
+          if (String(sql).includes('INSERT INTO durable_events')) eventsOrder.push('CLAIM_INSERT');
+          if (String(sql).includes('DELETE FROM durable_events')) eventsOrder.push('CLAIM_RELEASE');
+          return { results: [], rowsAffected: 1, source: 'LOCAL_SQLITE' } as any;
+        });
+        const fetchMock400 = vi.fn().mockResolvedValue({
+          ok: false,
+          status: 400,
+          text: async () => {
+            eventsOrder.push('READ_BODY');
+            throw new Error('BODY_STREAM_INTERRUPTED');
+          }
+        });
+
+        const resB = await adapter.postPublishedGuide({
+          guideTitle: 'Deterministic 400 Test',
+          guideUrl: 'https://example.com/deal-b',
+          dealId: 'deal_claim_400',
+          fetchFn: fetchMock400 as any
+        });
+        expect(resB.posted).toBe(false);
+        expect(resB.reason).toContain('HTTP 400');
+        expect(eventsOrder).toEqual(['CLAIM_INSERT', 'CLAIM_RELEASE', 'READ_BODY']);
+        queryOneSpyB.mockRestore();
+        writeSpyB.mockRestore();
+
+        // Case C: Claim acquired + 429, 503, or network error -> MUST preserve claim (ZERO DELETE calls)
+        for (const scenario of [
+          {
+            dealId: 'deal_claim_429',
+            fetchFn: vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => 'Too Many Requests' })
+          },
+          {
+            dealId: 'deal_claim_503',
+            fetchFn: vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => 'Service Unavailable' })
+          },
+          {
+            dealId: 'deal_claim_timeout',
+            fetchFn: vi.fn().mockRejectedValue(new Error('ETIMEDOUT network timeout'))
+          }
+        ]) {
+          const deletedSqls: string[] = [];
+          const qSpy = vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (_table, sql) => {
+            if (String(sql).includes('WHERE id = ?')) return null;
+            return { cnt: 0 } as any;
+          });
+          const wSpy = vi.spyOn(d1Repo, 'executeWrite').mockImplementation(async (_table, sql) => {
+            if (String(sql).includes('DELETE FROM durable_events')) deletedSqls.push(String(sql));
+            return { results: [], rowsAffected: 1, source: 'LOCAL_SQLITE' } as any;
+          });
+
+          const res = await adapter.postPublishedGuide({
+            guideTitle: `Preserve Claim ${scenario.dealId}`,
+            guideUrl: `https://example.com/${scenario.dealId}`,
+            dealId: scenario.dealId,
+            fetchFn: scenario.fetchFn as any
+          });
+          expect(res.posted).toBe(false);
+          expect(deletedSqls).toEqual([]);
+          qSpy.mockRestore();
+          wSpy.mockRestore();
+        }
+      } finally {
+        if (prevToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        if (prevChannel === undefined) delete process.env.TELEGRAM_CHANNEL_ID;
+        else process.env.TELEGRAM_CHANNEL_ID = prevChannel;
+        if (prevEnabled === undefined) delete process.env.TELEGRAM_ENABLED;
+        else process.env.TELEGRAM_ENABLED = prevEnabled;
+        TelegramBotAdapter.resetInstance();
+      }
+    });
+  });
 });

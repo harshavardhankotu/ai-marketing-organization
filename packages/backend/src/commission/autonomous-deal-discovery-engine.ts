@@ -1368,7 +1368,25 @@ export class AutonomousDealDiscoveryEngine {
         return [];
       }
 
-      const json = await res.json() as any;
+      const contentType = (res.headers?.get?.('content-type') || '').toLowerCase();
+      if (contentType && (contentType.includes('text/html') || contentType.includes('application/xhtml'))) {
+        return [];
+      }
+
+      let json: any = null;
+      if (typeof res.text === 'function') {
+        const rawBody = (await res.text()).trim();
+        if (!rawBody || rawBody.startsWith('<')) {
+          return [];
+        }
+        try {
+          json = JSON.parse(rawBody);
+        } catch {
+          return [];
+        }
+      } else {
+        json = await res.json() as any;
+      }
       const products = Array.isArray(json?.products) ? json.products : [];
 
       for (const product of products) {

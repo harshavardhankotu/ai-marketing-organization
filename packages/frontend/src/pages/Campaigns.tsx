@@ -140,8 +140,10 @@ export const Campaigns: React.FC<CampaignsProps> = ({
       api.getTelegramStatus().catch(() => null),
       api.getInstagramStatus().catch(() => null)
     ]).then(([cmpRes, guideRes, tgRes, igRes]) => {
-      setComparisons(cmpRes?.comparisons || cmpRes?.data || []);
-      setBuyerGuides(guideRes?.guides || guideRes?.data || []);
+      const cmpList = cmpRes?.comparisons ?? cmpRes?.data?.comparisons ?? (Array.isArray(cmpRes?.data) ? cmpRes.data : []);
+      const guideList = guideRes?.guides ?? guideRes?.data?.guides ?? (Array.isArray(guideRes?.data) ? guideRes.data : []);
+      setComparisons(Array.isArray(cmpList) ? cmpList : []);
+      setBuyerGuides(Array.isArray(guideList) ? guideList : []);
       setTelegramStatus(tgRes?.data || tgRes || null);
       setIgStatus(igRes?.data || igRes || null);
     });
@@ -472,15 +474,20 @@ export const Campaigns: React.FC<CampaignsProps> = ({
               <p className="text-slate-500">No /vs/ comparison pages generated yet.</p>
             ) : (
               <ul className="space-y-1">
-                {comparisons.slice(0, 4).map((c: any) => (
-                  <li key={c.slug} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-slate-300">{c.title || c.slug}</span>
-                    <a href={`/vs/${encodeURIComponent(c.slug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
-                      <span>Open</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                ))}
+                {comparisons.slice(0, 4).map((c: any, idx: number) => {
+                  const slug = c.comparisonSlug || c.slug || '';
+                  return (
+                    <li key={slug || `cmp_${idx}`} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-300">{c.title || slug}</span>
+                      {slug && (
+                        <a href={`/vs/${encodeURIComponent(slug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                          <span>Open</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -490,15 +497,20 @@ export const Campaigns: React.FC<CampaignsProps> = ({
               <p className="text-slate-500">No /best/ buyer guides published yet.</p>
             ) : (
               <ul className="space-y-1">
-                {buyerGuides.slice(0, 4).map((g: any) => (
-                  <li key={g.slug} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-slate-300">{g.title || g.slug}</span>
-                    <a href={`/best/${encodeURIComponent(g.slug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
-                      <span>Open</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                ))}
+                {buyerGuides.slice(0, 4).map((g: any, idx: number) => {
+                  const slug = g.intentSlug || g.slug || '';
+                  return (
+                    <li key={slug || `guide_${idx}`} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-300">{g.title || g.h1 || slug}</span>
+                      {slug && (
+                        <a href={`/best/${encodeURIComponent(slug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                          <span>Open</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -583,7 +595,7 @@ export const Campaigns: React.FC<CampaignsProps> = ({
       ) : (
         /* Campaigns List */
         <div className="space-y-4">
-          {filteredCampaigns.map((camp: any) => {
+          {filteredCampaigns.map((camp: any, idx: number) => {
             const achievedLeads = Number(camp.achieved_qualified_leads ?? 0);
             const targetLeads = Number(camp.target_qualified_leads ?? 100);
             const progress = targetLeads > 0 ? Math.min(100, Math.round((achievedLeads / targetLeads) * 100)) : 0;
@@ -593,7 +605,7 @@ export const Campaigns: React.FC<CampaignsProps> = ({
 
             return (
               <div
-                key={camp.id}
+                key={camp.id || `camp_${idx}`}
                 className="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden"
               >
                 <div className="p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
@@ -746,13 +758,13 @@ export const Campaigns: React.FC<CampaignsProps> = ({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/80">
-                          {campExps.map((exp: any) => {
+                          {campExps.map((exp: any, expIdx: number) => {
                             const m = getSafeMetrics(exp);
                             const outcome = exp.outcome || 'RUNNING';
                             const isEditing = editingMetricsExpId === exp.id;
 
                             return (
-                              <React.Fragment key={exp.id}>
+                              <React.Fragment key={exp.id || `exp_${expIdx}`}>
                                 <tr className="hover:bg-slate-900/60 transition-colors">
                                   <td className="py-2.5 px-3 align-top max-w-xs">
                                     <div className="font-semibold text-slate-200">{m.variantLabel}</div>
