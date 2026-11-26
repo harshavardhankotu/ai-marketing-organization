@@ -1924,7 +1924,7 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
 
   try {
     try {
-      queueRecovery = await queue.recoverStaleAndBlockedJobs();
+      queueRecovery = await queue.recoverStaleAndBlockedJobs({ skipSystemDoctor: true });
     } catch (recErr: any) {
       if (String(recErr?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
         budgetStopped = true;
@@ -2018,7 +2018,13 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       try {
         const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
         const doctor = AutonomousSystemDoctor.getInstance();
-        if (!process.env.VITEST && !doctor.getLastReport()) {
+        if (
+          !process.env.VITEST &&
+          !doctor.getLastReport() &&
+          executedJobs.length === 0 &&
+          (Date.now() - startTime) < Math.min(5000, budgetMs / 2) &&
+          !d1Client.isCycleBudgetExceeded()
+        ) {
           await doctor.runSelfHealingPass({ skipRecoveryRecursion: true, skipLlm: true });
         }
         return await doctor.getPublicSystemDoctorSummary();
@@ -8644,7 +8650,46 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const checkoutOpenInvokedCount = Number(sfxTotals?.checkout_open_invoked ?? 0);
   const checkoutModalOpenedCount = Number(sfxTotals?.checkout_modal_opened ?? 0);
   checkoutInitiated = checkoutOpenInvokedCount || checkoutModalOpenedCount;
-  paymentCaptured = ledgerCapturedCount || Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
+  const rawEventCaptured = Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
+  let verifiedEventCaptured = rawEventCaptured;
+  if (ledgerCapturedCount === 0 && rawEventCaptured > 0) {
+    try {
+      const capEventsRaw = await safeQuery<any>(
+        'durable_events',
+        `SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' AND (payload_json LIKE '%"payment_captured"%' OR payload_json LIKE '%"capture"%')`,
+        [],
+        'durable_events.sitefix_capture_filter'
+      );
+      const capEvents = Array.isArray(capEventsRaw) ? capEventsRaw : (capEventsRaw ? [capEventsRaw] : []);
+      if (capEvents.length > 0) {
+        const testOrdersRaw = await safeQuery<any>(
+          'universal_orders',
+          `SELECT id FROM universal_orders WHERE is_test = 1 OR status = 'TEST_CAPTURED' OR metadata_json LIKE '%"mode":"TEST_SANDBOX"%' OR metadata_json LIKE '%"mode": "TEST_SANDBOX"%'`,
+          [],
+          'universal_orders.test_sandbox_ids'
+        );
+        const testOrderIds = new Set(
+          (Array.isArray(testOrdersRaw) ? testOrdersRaw : (testOrdersRaw ? [testOrdersRaw] : []))
+            .map((r: any) => String(r?.id || '').trim())
+            .filter(Boolean)
+        );
+        let nonTestCaptures = 0;
+        for (const row of capEvents) {
+          try {
+            const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+            const st = String(p?.stage || '').toLowerCase();
+            if (st !== 'payment_captured' && st !== 'capture') continue;
+            if (p?.isProbe === true || p?.isTest === true || String(p?.mode || '').toUpperCase() === 'TEST_SANDBOX') continue;
+            const ordId = String(p?.orderId || '').trim();
+            if (ordId && testOrderIds.has(ordId)) continue;
+            nonTestCaptures++;
+          } catch {}
+        }
+        verifiedEventCaptured = nonTestCaptures;
+      }
+    } catch {}
+  }
+  paymentCaptured = ledgerCapturedCount || verifiedEventCaptured;
   // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
   fixPackPreviews = Number(sfxTotals?.preview_displayed ?? 0);
   const deliverableReadyCount = Number(sfxTotals?.deliverable_ready ?? sfxTotals?.delivery ?? 0);

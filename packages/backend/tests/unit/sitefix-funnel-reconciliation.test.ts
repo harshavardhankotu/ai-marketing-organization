@@ -650,4 +650,48 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     expect(res2.headers.get('content-type')).toContain('text/plain');
     expect(await res2.text()).toBe('ai-marketing-indexnow-key');
   });
+
+  it('17. TEST_SANDBOX order capture events do not increment live payment_captured in /revenue-funnel', async () => {
+    const db = getDb();
+    const sandboxOrderId = 'ord_rzp_sandbox_test_1';
+    db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+
+    try {
+      db.prepare(`
+        INSERT INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+          amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+          fulfillment_status, metadata_json, is_test, created_at, updated_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'SiteFix Customer', 'test@example.com', '',
+          49900, 'INR', 'TEST_CAPTURED', 'RAZORPAY', 'order_sandbox_1', 'pay_sandbox_1',
+          'DELIVERABLE_READY_EMAIL_PENDING', '{"mode":"TEST_SANDBOX","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+        )
+      `).run(sandboxOrderId);
+
+      await recordSiteFixFunnelEvent({
+        stage: 'capture',
+        source: 'web',
+        isProbe: false,
+        orderId: sandboxOrderId,
+        paymentId: 'pay_sandbox_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+
+      const funnelRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(funnelRes.status).toBe(200);
+      const funnelJson = await funnelRes.json();
+      expect(funnelJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(0);
+      expect(funnelJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(0);
+
+      const preserved = db.prepare(`SELECT id, status FROM universal_orders WHERE id = ?`).get(sandboxOrderId) as any;
+      expect(preserved?.status).toBe('TEST_CAPTURED');
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
+      db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+    }
+  });
 });

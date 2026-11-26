@@ -117,6 +117,7 @@ describe('PR #96: Seal D1 Leaks, Durable Storage Policy, Readiness Compatibility
       headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
     });
     expect(claimRes.status).toBe(200);
+    expect(recoverSpy).toHaveBeenCalledWith({ skipSystemDoctor: true });
     expect(cycleWasActiveDuringRecovery).toBe(true);
     expect(d1.isCycleActive()).toBe(false); // Guaranteed closed in finally
 
@@ -273,5 +274,41 @@ describe('PR #96: Seal D1 Leaks, Durable Storage Policy, Readiness Compatibility
     }
     expect(d1.isRemoteD1ReadQuotaExhausted()).toBe(true);
     expect(d1.isRemoteD1WriteQuotaExhausted()).toBe(false);
+  });
+
+  it('(f) /claim-and-run skips AutonomousSystemDoctor.runSelfHealingPass when executedJobs.length > 0', async () => {
+    const app = createTestApp();
+    const queue = DurableJobQueue.getInstance();
+    const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+    const { AutomationRegistryEngine } = await import('../../src/automation/automation-registry-engine.js');
+    const doctor = AutonomousSystemDoctor.getInstance();
+    const engine = AutomationRegistryEngine.getInstance();
+
+    vi.spyOn(queue, 'recoverStaleAndBlockedJobs').mockResolvedValue({} as any);
+    vi.spyOn(queue, 'enqueueJobsBatch').mockResolvedValue({ enqueuedCount: 0, existingCount: 0, failedCount: 0, errors: [] });
+    vi.spyOn(queue, 'claimDueJob')
+      .mockResolvedValueOnce({ id: 'job_safe_1', workflowId: 'quota_health_checks', leaseToken: 'lease_1' } as any)
+      .mockResolvedValue(null);
+    vi.spyOn(queue, 'completeJob').mockResolvedValue(undefined as any);
+    vi.spyOn(queue, 'getJobById').mockResolvedValue({ id: 'job_safe_1', workflowId: 'quota_health_checks', status: 'COMPLETED' } as any);
+    vi.spyOn(engine, 'executeWorkflow').mockResolvedValue({ status: 'COMPLETED', resultSummary: 'ok', durationMs: 5 } as any);
+    vi.spyOn(doctor, 'getLastReport').mockReturnValue(null);
+    const healSpy = vi.spyOn(doctor, 'runSelfHealingPass').mockResolvedValue({} as any);
+
+    const prevVitest = process.env.VITEST;
+    delete process.env.VITEST;
+    try {
+      const claimRes = await app.request('/api/v1/cron/worker/claim-and-run', {
+        method: 'POST',
+        headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+      });
+      expect(claimRes.status).toBe(200);
+      const claimJson = await claimRes.json() as any;
+      expect(claimJson.claimed).toBe(true);
+      expect(claimJson.jobsExecutedCount).toBe(1);
+      expect(healSpy).not.toHaveBeenCalled();
+    } finally {
+      if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+    }
   });
 });

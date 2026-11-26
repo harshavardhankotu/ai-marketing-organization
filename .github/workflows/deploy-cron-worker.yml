@@ -122,8 +122,21 @@ jobs:
             echo "worker_url=$WORKER_URL" >> $GITHUB_OUTPUT
           fi
 
-      - name: Smoke test - Backend /health
+          # Sync CRON_PING_SECRET onto Cloudflare Worker via stdin (never logged)
+          printf '%s' "$CRON_PING_SECRET" | wrangler secret put CRON_PING_SECRET >/dev/null
+          echo "✅ Synced CRON_PING_SECRET to ai-marketing-cron-worker"
+
+      - name: Smoke test - Worker /health & Backend /health
         run: |
+          WORKER_URL="${{ steps.deploy_worker.outputs.worker_url }}"
+          if [ -n "$WORKER_URL" ]; then
+            W_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$WORKER_URL/health" --max-time 30)
+            echo "Worker /health HTTP Status: $W_STATUS"
+            if [ "$W_STATUS" != "200" ]; then
+              echo "❌ Worker /health returned $W_STATUS — unexpected"
+              exit 1
+            fi
+          fi
           echo "Running smoke test against $BACKEND_URL/api/v1/health"
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/health" --max-time 45)
           echo "HTTP Status: $HTTP_STATUS"
@@ -134,13 +147,13 @@ jobs:
             exit 1
           fi
 
-      - name: Smoke test - Cron ping & D1 verification
+      - name: Smoke test - Cron ping, claim-and-run auth & D1 verification
         run: |
           echo "Triggering real cron ping to $BACKEND_URL/api/v1/cron/ping..."
           PING_STATUS=$(curl -s -o ping_response.json -w "%{http_code}" -X POST "$BACKEND_URL/api/v1/cron/ping" \
             -H "Content-Type: application/json" \
             -H "X-Cron-Secret: $CRON_PING_SECRET" \
-            -d "{\"triggerSource\":\"CLOUDFLARE_CRON\",\"scheduledAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"cronExpression\":\"0 * * * *\"}" \
+            -d "{\"triggerSource\":\"CLOUDFLARE_CRON\",\"scheduledAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"cronExpression\":\"30 3,15 * * *\"}" \
             --retry 3 --retry-delay 10 --max-time 120)
 
           echo "Ping HTTP status: $PING_STATUS"
@@ -152,6 +165,18 @@ jobs:
             exit 1
           fi
           echo "✅ Live cron ping succeeded (HTTP 200)"
+
+          echo "Verifying /api/v1/cron/worker/claim-and-run auth (maxJobs=0 dry drain)..."
+          CLAIM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BACKEND_URL/api/v1/cron/worker/claim-and-run?budgetMs=5000&maxJobs=0" \
+            -H "Content-Type: application/json" \
+            -H "X-Cron-Secret: $CRON_PING_SECRET" \
+            --max-time 30)
+          echo "Claim-and-run auth HTTP status: $CLAIM_STATUS"
+          if [ "$CLAIM_STATUS" != "200" ]; then
+            echo "❌ /api/v1/cron/worker/claim-and-run auth failed with status $CLAIM_STATUS"
+            exit 1
+          fi
+          echo "✅ /api/v1/cron/worker/claim-and-run auth succeeded (HTTP 200)"
 
           echo "Verifying cron_telemetry record in Cloudflare D1..."
           D1_TOKEN="${CLOUDFLARE_D1_API_TOKEN:-$CLOUDFLARE_API_TOKEN}"
