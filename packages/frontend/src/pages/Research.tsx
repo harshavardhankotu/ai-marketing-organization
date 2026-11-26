@@ -43,7 +43,7 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
       ]);
       if (lockRes?.data) setLockReport(lockRes.data);
       setAutonomyStatus(statusRes?.data || statusRes || null);
-      const dealsList = dealsRes?.deals || dealsRes?.data || [];
+      const dealsList = dealsRes?.deals ?? dealsRes?.data?.deals ?? dealsRes?.data;
       setLiveDeals(Array.isArray(dealsList) ? dealsList : []);
       const auditsList = readyRes?.readyAudits || readyRes?.data?.readyAudits || [];
       setReadyAudits(Array.isArray(auditsList) ? auditsList : []);

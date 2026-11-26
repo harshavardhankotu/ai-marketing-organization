@@ -140,8 +140,10 @@ export const Campaigns: React.FC<CampaignsProps> = ({
       api.getTelegramStatus().catch(() => null),
       api.getInstagramStatus().catch(() => null)
     ]).then(([cmpRes, guideRes, tgRes, igRes]) => {
-      setComparisons(cmpRes?.comparisons || cmpRes?.data || []);
-      setBuyerGuides(guideRes?.guides || guideRes?.data || []);
+      const rawComparisons = cmpRes?.comparisons ?? cmpRes?.data?.comparisons ?? cmpRes?.data;
+      setComparisons(Array.isArray(rawComparisons) ? rawComparisons : []);
+      const rawGuides = guideRes?.guides ?? guideRes?.data?.guides ?? guideRes?.data;
+      setBuyerGuides(Array.isArray(rawGuides) ? rawGuides : []);
       setTelegramStatus(tgRes?.data || tgRes || null);
       setIgStatus(igRes?.data || igRes || null);
     });
@@ -472,15 +474,20 @@ export const Campaigns: React.FC<CampaignsProps> = ({
               <p className="text-slate-500">No /vs/ comparison pages generated yet.</p>
             ) : (
               <ul className="space-y-1">
-                {comparisons.slice(0, 4).map((c: any) => (
-                  <li key={c.slug} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-slate-300">{c.title || c.slug}</span>
-                    <a href={`/vs/${encodeURIComponent(c.slug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
-                      <span>Open</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                ))}
+                {comparisons.slice(0, 4).map((c: any, idx: number) => {
+                  const cmpSlug = String(c?.comparisonSlug || c?.slug || '').trim();
+                  return (
+                    <li key={`${cmpSlug || c?.title || 'cmp'}_${idx}`} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-300">{c.title || cmpSlug || 'Comparison'}</span>
+                      {cmpSlug ? (
+                        <a href={`/vs/${encodeURIComponent(cmpSlug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                          <span>Open</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -490,15 +497,20 @@ export const Campaigns: React.FC<CampaignsProps> = ({
               <p className="text-slate-500">No /best/ buyer guides published yet.</p>
             ) : (
               <ul className="space-y-1">
-                {buyerGuides.slice(0, 4).map((g: any) => (
-                  <li key={g.slug} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-slate-300">{g.title || g.slug}</span>
-                    <a href={`/best/${encodeURIComponent(g.slug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
-                      <span>Open</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                ))}
+                {buyerGuides.slice(0, 4).map((g: any, idx: number) => {
+                  const guideSlug = String(g?.intentSlug || g?.slug || '').trim();
+                  return (
+                    <li key={`${guideSlug || g?.title || 'guide'}_${idx}`} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-300">{g.title || guideSlug || 'Buyer Guide'}</span>
+                      {guideSlug ? (
+                        <a href={`/best/${encodeURIComponent(guideSlug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                          <span>Open</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

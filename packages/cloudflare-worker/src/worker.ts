@@ -97,7 +97,7 @@ async function runCycle(env: Env): Promise<void> {
           'X-Cron-Secret': env.CRON_PING_SECRET,
           'User-Agent': 'ai-marketing-cron-worker/1.0'
         },
-        signal: AbortSignal.timeout(25000)
+        signal: AbortSignal.timeout(50000)
       });
       const elapsedClaim = Date.now() - claimStart;
       if (claimRes.ok) {

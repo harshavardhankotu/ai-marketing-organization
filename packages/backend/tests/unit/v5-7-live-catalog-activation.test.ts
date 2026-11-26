@@ -239,4 +239,33 @@ describe('V5.7 — Live Catalog Activation, B2B Leak Prevention & Multi-Merchant
       expect(json.policyGate.humanReviewGate).toBe('STRICT_ENFORCED');
     });
   });
+
+  describe('7. Shopify Feed HTML/Non-JSON Guard', () => {
+    it('returns [] without a JSON parse warning when Shopify products.json returns HTTP 200 text/html', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response('<!DOCTYPE html><html><body>Challenge</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        })
+      );
+      engine.setFetchFn(mockFetch as any);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const deals = await engine.harvestMerchantShopifyFeed({
+          domain: 'worldofasaya.com',
+          name: 'World of Asaya',
+          brand: 'Asaya',
+          sectorCode: 'SECTOR_G_LIFESTYLE',
+          category: 'Health & Beauty',
+          cuelinksCampaignId: '6458'
+        });
+        expect(deals).toEqual([]);
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
 });

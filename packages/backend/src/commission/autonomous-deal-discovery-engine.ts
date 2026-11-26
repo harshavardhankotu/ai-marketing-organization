@@ -1354,20 +1354,40 @@ export class AutonomousDealDiscoveryEngine {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      const res = await fetchFn(feedUrl, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
+      let res: Response;
+      try {
+        res = await fetchFn(feedUrl, {
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          },
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!res.ok) {
         return [];
       }
 
-      const json = await res.json() as any;
+      const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+        return [];
+      }
+
+      const rawBody = await res.text();
+      const trimmedBody = rawBody.trimStart();
+      if (!trimmedBody || trimmedBody.startsWith('<')) {
+        return [];
+      }
+
+      let json: any;
+      try {
+        json = JSON.parse(trimmedBody);
+      } catch {
+        return [];
+      }
       const products = Array.isArray(json?.products) ? json.products : [];
 
       for (const product of products) {
