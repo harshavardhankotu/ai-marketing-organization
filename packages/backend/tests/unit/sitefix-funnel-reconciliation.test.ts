@@ -655,8 +655,11 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     const db = getDb();
     const sandboxOrderId = 'ord_rzp_sandbox_test_1';
     db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`DROP TABLE IF EXISTS payment_orders_temp_backup`).run();
     db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
     db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+    db.prepare(`ALTER TABLE payment_orders RENAME TO payment_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE payment_orders AS SELECT * FROM payment_orders_temp_backup WHERE 0`).run();
 
     try {
       db.prepare(`
@@ -692,6 +695,8 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     } finally {
       db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
       db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+      db.prepare(`DROP TABLE IF EXISTS payment_orders`).run();
+      db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
     }
   });
 });
