@@ -606,9 +606,9 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(json.data.manualExecutions24h).toBeGreaterThanOrEqual(1);
     });
 
-    it('flags STALE when Cloudflare Worker last ping is older than 75 minutes', async () => {
+    it('flags STALE when Cloudflare Worker last ping is older than 13 hours', async () => {
       const db = getDb();
-      const staleIso = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+      const staleIso = new Date(Date.now() - 14 * 60 * 60 * 1000).toISOString();
 
       db.prepare(`
         INSERT OR REPLACE INTO cron_telemetry (
@@ -623,7 +623,7 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       const json = await res.json();
 
       expect(json.data.status).toBe('STALE');
-      expect(json.data.heartbeatAgeMinutes).toBeGreaterThanOrEqual(85);
+      expect(json.data.heartbeatAgeMinutes).toBeGreaterThanOrEqual(13 * 60);
     });
   });
 
