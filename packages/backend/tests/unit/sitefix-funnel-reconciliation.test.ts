@@ -692,6 +692,59 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
 
       const preserved = db.prepare(`SELECT id, status FROM universal_orders WHERE id = ?`).get(sandboxOrderId) as any;
       expect(preserved?.status).toBe('TEST_CAPTURED');
+
+      // 17b/c: Live capture + similar-looking non-test capture stored alongside sandbox row (sandbox row first) ARE counted
+      const liveLookalikeOrderId = 'ord_rzp_live_lookalike_1';
+      db.prepare(`
+        INSERT INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+          amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+          fulfillment_status, metadata_json, is_test, created_at, updated_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Live Buyer', 'buyer@example.com', '',
+          49900, 'INR', 'CHECKOUT', 'RAZORPAY', 'order_live_1', 'pay_live_1',
+          'PENDING', '{"mode":"LIVE","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+        )
+      `).run(liveLookalikeOrderId);
+
+      await recordSiteFixFunnelEvent({
+        stage: 'payment_captured',
+        source: 'web',
+        isProbe: false,
+        orderId: liveLookalikeOrderId,
+        paymentId: 'pay_live_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+
+      const multiRowRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(multiRowRes.status).toBe(200);
+      const multiRowJson = await multiRowRes.json();
+      expect(multiRowJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+      expect(multiRowJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+      expect(multiRowJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+      expect(db.prepare(`SELECT id FROM universal_orders WHERE id = ?`).get(sandboxOrderId)).toBeDefined();
+      expect(db.prepare(`SELECT id FROM universal_orders WHERE id = ?`).get(liveLookalikeOrderId)).toBeDefined();
+
+      // 17d: Classification lookup failure fails safely without falling back to rawEventCaptured
+      const repo = D1RevenueRepository.getInstance();
+      const origQuery = repo.query.bind(repo);
+      const querySpy = vi.spyOn(repo, 'query').mockImplementation(async (table: string, sql: string, params?: any[]) => {
+        if (table === 'universal_orders' && sql.includes('TEST_CAPTURED')) {
+          throw new Error('D1 classification lookup failed');
+        }
+        return origQuery(table, sql, params);
+      });
+      try {
+        const failRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(failRes.status).toBe(200);
+        const failJson = await failRes.json();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        querySpy.mockRestore();
+      }
     } finally {
       db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
       db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();

@@ -8099,6 +8099,23 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     }
   };
 
+  const safeQueryAll = async <T = any>(
+    table: string,
+    sql: string,
+    params: any[] = [],
+    queryName: string
+  ): Promise<{ ok: true; rows: T[] } | { ok: false; rows: T[] }> => {
+    try {
+      const rows = await d1Repo.query<T>(table, sql, params);
+      return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+    } catch (err: any) {
+      console.warn(`[RevenueFunnel] Multi-row query '${queryName}' failed:`, err.message);
+      failedQueries.push(queryName);
+      measurementStatus = 'DEGRADED_DB_ERROR';
+      return { ok: false, rows: [] };
+    }
+  };
+
   // Non-cash metrics (traffic, clicks, CTR, Cuelinks summary, prospects, drafts, proposals, audits, monetized partners)
   // are cached in memory for 10 minutes to protect Cloudflare D1 free tier read quotas.
   let verifiedExternalVisits = 0;
@@ -8565,7 +8582,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let checkoutInitiated = 0;
   let paymentOrdersCreated = 0;
   let paymentAuthorized = 0;
-  let paymentCaptured = 0;
+  let paymentCaptured: number | null = 0;
+  let paymentCapturedStatus: 'VERIFIED' | 'UNAVAILABLE' = 'VERIFIED';
   let fulfilmentsPending = 0;
   let fulfilmentsCompleted = 0;
   let fulfilmentsFailed = 0;
@@ -8651,45 +8669,45 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const checkoutModalOpenedCount = Number(sfxTotals?.checkout_modal_opened ?? 0);
   checkoutInitiated = checkoutOpenInvokedCount || checkoutModalOpenedCount;
   const rawEventCaptured = Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
-  let verifiedEventCaptured = rawEventCaptured;
-  if (ledgerCapturedCount === 0 && rawEventCaptured > 0) {
-    try {
-      const capEventsRaw = await safeQuery<any>(
-        'durable_events',
-        `SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' AND (payload_json LIKE '%"payment_captured"%' OR payload_json LIKE '%"capture"%')`,
-        [],
-        'durable_events.sitefix_capture_filter'
+  if (ledgerCapturedCount > 0) {
+    paymentCaptured = ledgerCapturedCount;
+  } else if (rawEventCaptured === 0) {
+    paymentCaptured = 0;
+  } else {
+    const capRes = await safeQueryAll<{ payload_json: string }>(
+      'durable_events',
+      `SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' AND (payload_json LIKE '%"payment_captured"%' OR payload_json LIKE '%"capture"%')`,
+      [],
+      'durable_events.sitefix_capture_filter'
+    );
+    const testOrdersRes = await safeQueryAll<{ id: string }>(
+      'universal_orders',
+      `SELECT id FROM universal_orders WHERE is_test = 1 OR status = 'TEST_CAPTURED' OR metadata_json LIKE '%"mode":"TEST_SANDBOX"%' OR metadata_json LIKE '%"mode": "TEST_SANDBOX"%'`,
+      [],
+      'universal_orders.test_sandbox_ids'
+    );
+    if (!capRes.ok || !testOrdersRes.ok) {
+      paymentCaptured = null;
+      paymentCapturedStatus = 'UNAVAILABLE';
+    } else {
+      const testOrderIds = new Set(
+        testOrdersRes.rows.map((r: any) => String(r?.id || '').trim()).filter(Boolean)
       );
-      const capEvents = Array.isArray(capEventsRaw) ? capEventsRaw : (capEventsRaw ? [capEventsRaw] : []);
-      if (capEvents.length > 0) {
-        const testOrdersRaw = await safeQuery<any>(
-          'universal_orders',
-          `SELECT id FROM universal_orders WHERE is_test = 1 OR status = 'TEST_CAPTURED' OR metadata_json LIKE '%"mode":"TEST_SANDBOX"%' OR metadata_json LIKE '%"mode": "TEST_SANDBOX"%'`,
-          [],
-          'universal_orders.test_sandbox_ids'
-        );
-        const testOrderIds = new Set(
-          (Array.isArray(testOrdersRaw) ? testOrdersRaw : (testOrdersRaw ? [testOrdersRaw] : []))
-            .map((r: any) => String(r?.id || '').trim())
-            .filter(Boolean)
-        );
-        let nonTestCaptures = 0;
-        for (const row of capEvents) {
-          try {
-            const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
-            const st = String(p?.stage || '').toLowerCase();
-            if (st !== 'payment_captured' && st !== 'capture') continue;
-            if (p?.isProbe === true || p?.isTest === true || String(p?.mode || '').toUpperCase() === 'TEST_SANDBOX') continue;
-            const ordId = String(p?.orderId || '').trim();
-            if (ordId && testOrderIds.has(ordId)) continue;
-            nonTestCaptures++;
-          } catch {}
-        }
-        verifiedEventCaptured = nonTestCaptures;
+      let nonTestCaptures = 0;
+      for (const row of capRes.rows) {
+        try {
+          const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+          const st = String(p?.stage || '').toLowerCase();
+          if (st !== 'payment_captured' && st !== 'capture') continue;
+          if (p?.isProbe === true || p?.isTest === true || String(p?.mode || '').toUpperCase() === 'TEST_SANDBOX') continue;
+          const ordId = String(p?.orderId || '').trim();
+          if (ordId && testOrderIds.has(ordId)) continue;
+          nonTestCaptures++;
+        } catch {}
       }
-    } catch {}
+      paymentCaptured = nonTestCaptures;
+    }
   }
-  paymentCaptured = ledgerCapturedCount || verifiedEventCaptured;
   // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
   fixPackPreviews = Number(sfxTotals?.preview_displayed ?? 0);
   const deliverableReadyCount = Number(sfxTotals?.deliverable_ready ?? sfxTotals?.delivery ?? 0);
@@ -8816,6 +8834,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         paymentOrdersCreated,
         paymentAuthorized,
         paymentCaptured,
+        paymentCapturedStatus,
         fulfilmentsPending,
         fulfilmentsCompleted,
         deliverable_ready: deliverableReadyCount,
