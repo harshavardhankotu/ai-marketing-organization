@@ -3098,6 +3098,25 @@ const firstCustomerPipeline = new FirstCustomerAutomationPipeline();
 const razorpayAdapter = new RazorpayAdapter();
 const dpdpManager = new DPDPComplianceManager();
 const publicRateLimitMap = new Map<string, number[]>();
+const shoppingEventRateLimitMap = new Map<string, number[]>();
+
+function checkInMemoryShoppingEventRateLimit(clientIp: string, limit = 30, windowMs = 60_000): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  if (shoppingEventRateLimitMap.size > 5000) {
+    shoppingEventRateLimitMap.clear();
+  }
+  const existing = (shoppingEventRateLimitMap.get(clientIp) || []).filter(ts => ts > cutoff);
+  if (existing.length >= limit) {
+    const oldest = existing[0] || now;
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
+    shoppingEventRateLimitMap.set(clientIp, existing);
+    return { allowed: false, retryAfterSeconds };
+  }
+  existing.push(now);
+  shoppingEventRateLimitMap.set(clientIp, existing);
+  return { allowed: true, retryAfterSeconds: 0 };
+}
 
 apiRouter.get('/revenue/summary', (c) => {
   const orgId = c.get('organizationId');
@@ -16886,6 +16905,15 @@ apiRouter.post('/owner/onboarding/acceptance-record', async (c) => {
  */
 apiRouter.post('/public/shopping-event', async (c) => {
   const clientIp = getTrustedClientIp(c).ip;
+  const rateLimit = checkInMemoryShoppingEventRateLimit(clientIp, 30, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfterSeconds));
+    return c.json({
+      success: false,
+      error: 'RATE_LIMITED',
+      message: `Too many shopping events. Please retry after ${rateLimit.retryAfterSeconds}s.`
+    }, 429);
+  }
   const body = await c.req.json().catch(() => ({}));
   const event = body?.event;
   if (event === 'affiliate_redirect') {
@@ -16907,7 +16935,9 @@ apiRouter.post('/public/shopping-event', async (c) => {
       'x-diagnostic': c.req.header('x-diagnostic'),
       'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
       'x-test-traffic': c.req.header('x-test-traffic'),
-      'x-owner-preview': c.req.header('x-owner-preview')
+      'x-test-mode': c.req.header('x-test-mode'),
+      'x-owner-preview': c.req.header('x-owner-preview'),
+      'x-internal-admin': c.req.header('x-internal-admin')
     }
   });
   return c.json({ success: true, recorded: res.recorded });
@@ -16981,7 +17011,9 @@ apiRouter.post('/public/fair-price-check', async (c) => {
     'x-diagnostic': c.req.header('x-diagnostic'),
     'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
     'x-test-traffic': c.req.header('x-test-traffic'),
-    'x-owner-preview': c.req.header('x-owner-preview')
+    'x-test-mode': c.req.header('x-test-mode'),
+    'x-owner-preview': c.req.header('x-owner-preview'),
+    'x-internal-admin': c.req.header('x-internal-admin')
   };
   void recordShoppingFunnelEvent({
     event: 'preference_submitted',

@@ -671,6 +671,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
                 return '<a href="' + escHtml(v.videoUrl) + '" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:underline;">' + escHtml(v.title) + '</a>';
               }).join(' · ') + '</div>'
             : '';
+          var couponHtml = r.couponCode
+            ? '<div style="font-size:0.76rem;color:#34d399;margin-bottom:0.45rem;">Coupon: <strong>' + escHtml(r.couponCode) + '</strong>' + (r.couponConditions ? ' (' + escHtml(r.couponConditions) + ')' : '') + '</div>'
+            : '';
           return '<article class="feature-item" style="display:flex;flex-direction:column;justify-content:space-between;gap:0.65rem;">' +
             '<div>' +
               '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.45rem;">' +
@@ -680,9 +683,11 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
               '<h3 style="font-size:0.98rem;color:#fff;margin-bottom:0.35rem;">' + escHtml(r.title) + '</h3>' +
               '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:baseline;margin-bottom:0.5rem;">' +
                 '<span style="font-size:1.25rem;font-weight:800;color:#fff;">₹' + Number(r.effectivePriceINR || r.currentPriceINR || 0).toLocaleString('en-IN') + '</span>' +
+                (r.couponCode && r.currentPriceINR && r.effectivePriceINR < r.currentPriceINR ? '<span style="font-size:0.78rem;text-decoration:line-through;color:#64748b;">₹' + Number(r.currentPriceINR).toLocaleString('en-IN') + '</span>' : '') +
                 (r.unitVolumeMl ? '<span style="font-size:0.75rem;color:#cbd5e1;">' + escHtml(r.unitVolumeMl) + ' ml</span>' : '') +
                 (r.pricePerMlINR ? '<span style="font-size:0.75rem;color:#67e8f9;font-weight:700;">₹' + Number(r.pricePerMlINR).toFixed(2) + '/ml</span>' : '') +
               '</div>' +
+              couponHtml +
               '<p style="font-size:0.82rem;color:#e2e8f0;margin-bottom:0.4rem;"><strong>Why it fits:</strong> ' + escHtml(r.matchReasoning) + '</p>' +
               '<p style="font-size:0.8rem;color:#94a3b8;"><strong>Trade-off:</strong> ' + escHtml(r.tradeOffs) + '</p>' +
               unverifiedHtml +
@@ -694,6 +699,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
             '</div>' +
           '</article>';
         }).join('');
+        var amazonRails = (Array.isArray(d.crossStoreOptions) ? d.crossStoreOptions : []).filter(function(o) { return o && o.isAmazonSearchRail && o.trackingRedirectUrl; });
+        var amazonHtml = amazonRails.length > 0
+          ? '<div style="margin-top:0.75rem;padding:0.75rem 0.9rem;background:#111827;border:1px solid #334155;border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:0.6rem;flex-wrap:wrap;">' +
+              '<span style="font-size:0.78rem;color:#cbd5e1;">' + escHtml(amazonRails[0].disclosure || '') + '</span>' +
+              '<a href="' + escHtml(amazonRails[0].trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" style="font-size:0.82rem;font-weight:700;color:#fcd34d;text-decoration:none;">' + escHtml(amazonRails[0].ctaLabel || '') + '</a>' +
+            '</div>'
+          : '';
         var modeLabel = d.analysisLabel ? String(d.analysisLabel) : (d.analysisMode === 'GEMINI_AI' ? 'Gemini AI Analysis' : 'Rule-Based Match (Deterministic Fallback)');
         var modeColor = d.analysisMode === 'GEMINI_AI' ? '#38bdf8' : '#94a3b8';
         out.innerHTML =
@@ -704,6 +716,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
             '</div>' +
             (d.aiBuyerNote ? '<div style="font-size:0.86rem;color:#38bdf8;margin-bottom:0.85rem;"><strong>Assistant Note:</strong> ' + escHtml(d.aiBuyerNote) + '</div>' : '') +
             (recs.length > 0 ? '<div class="grid-2">' + cardsHtml + '</div>' : '<div style="font-size:0.86rem;color:#94a3b8;">No matching verified products found for those exact filters. Try broadening your budget or ingredient query.</div>') +
+            amazonHtml +
           '</div>';
       } catch (err) {
         out.innerHTML = '<div style="font-size:0.85rem;color:#f87171;">Error: ' + escHtml(err.message || 'Check failed') + '</div>';
@@ -839,7 +852,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
       <p class="subtitle">Mobile-first admissions enquiry forms, WhatsApp click-to-chat routing, and structured lead tracking for training institutes.</p>
       <div style="margin-top: 1.25rem; display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap;">
         <a href="/demo" class="btn btn-primary" style="display: inline-block; background: #06b6d4; color: #090d16; font-weight: 700; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Try Live Interactive Demo &rarr;</a>
-        <a href="/#pilot-enquiry" class="btn btn-secondary" style="display: inline-block; background: #1e293b; color: #fff; border: 1px solid #334155; font-weight: 600; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Request Pilot Walkthrough</a>
+        <a href="/contact" class="btn btn-secondary" style="display: inline-block; background: #1e293b; color: #fff; border: 1px solid #334155; font-weight: 600; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Request Pilot Walkthrough</a>
       </div>
     </header>
 
@@ -860,7 +873,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
     <div class="card">
       <h2>Contact &amp; Verification</h2>
       <p style="color: #cbd5e1; font-size: 0.92rem;">
-        ${contactEmail ? `For Hyderabad Founding Pilot inquiries, contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : 'Reach the founder directly via our <a href="/contact" style="color: var(--accent);">Contact page</a> or <a href="/#pilot-enquiry" style="color: var(--accent);">pilot enquiry form</a>.'}
+        ${contactEmail ? `For Hyderabad Founding Pilot inquiries, contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : 'Reach the founder directly via our <a href="/contact" style="color: var(--accent);">Contact page</a>.'}
       </p>
     </div>
   </div>

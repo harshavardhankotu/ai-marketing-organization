@@ -33,7 +33,9 @@ export async function recordShoppingFunnelEvent(input: ShoppingFunnelEventInput)
     'x-diagnostic': input.headers?.['x-diagnostic'] || '',
     'x-diagnostic-probe': input.headers?.['x-diagnostic-probe'] || '',
     'x-test-traffic': input.headers?.['x-test-traffic'] || '',
-    'x-owner-preview': input.headers?.['x-owner-preview'] || ''
+    'x-test-mode': input.headers?.['x-test-mode'] || '',
+    'x-owner-preview': input.headers?.['x-owner-preview'] || '',
+    'x-internal-admin': input.headers?.['x-internal-admin'] || ''
   });
 
   if (trafficClass !== 'human' && trafficClass !== 'browser_candidate') {
@@ -80,6 +82,8 @@ export interface ShoppingFunnelCounts {
 }
 
 export interface ShoppingFunnelSummary {
+  status: 'OK' | 'UNAVAILABLE';
+  error?: string;
   window24h: ShoppingFunnelCounts;
   window7d: ShoppingFunnelCounts;
 }
@@ -134,6 +138,13 @@ export async function getShoppingFunnelSummaryAsync(): Promise<ShoppingFunnelSum
         window7d[ev] = Number(row?.cnt_7d || 0);
       }
     }
-  } catch {}
-  return { window24h, window7d };
+    return { status: 'OK', window24h, window7d };
+  } catch (err: any) {
+    return {
+      status: 'UNAVAILABLE',
+      error: err?.message || 'DB_UNAVAILABLE',
+      window24h: EMPTY_COUNTS(),
+      window7d: EMPTY_COUNTS()
+    };
+  }
 }

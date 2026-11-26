@@ -1501,6 +1501,9 @@ export class StaticSiteGenerator {
           var unv = (r.unverifiedRequirements && r.unverifiedRequirements.length > 0)
             ? '<div style="font-size:0.74rem;color:#fbbf24;margin-top:0.3rem;">Note: ' + escFp(r.unverifiedRequirements.join(' ')) + '</div>'
             : '';
+          var couponHtml = r.couponCode
+            ? '<div style="font-size:0.74rem;color:#34d399;margin-bottom:0.35rem;">Coupon: <strong>' + escFp(r.couponCode) + '</strong>' + (r.couponConditions ? ' (' + escFp(r.couponConditions) + ')' : '') + '</div>'
+            : '';
           return '<div style="background:#111827;border:1px solid #1e293b;border-radius:8px;padding:0.85rem;display:flex;flex-direction:column;justify-content:space-between;gap:0.5rem;">' +
             '<div>' +
               '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.35rem;margin-bottom:0.35rem;">' +
@@ -1508,7 +1511,8 @@ export class StaticSiteGenerator {
                 '<span style="font-size:0.7rem;color:#94a3b8;">#Affiliate</span>' +
               '</div>' +
               '<div style="font-size:0.9rem;font-weight:700;color:#fff;margin-bottom:0.25rem;">' + escFp(r.title) + '</div>' +
-              '<div style="font-size:0.85rem;font-weight:700;color:#67e8f9;margin-bottom:0.35rem;">₹' + Number(r.effectivePriceINR || r.currentPriceINR || 0).toLocaleString('en-IN') + (r.pricePerMlINR ? ' · ₹' + Number(r.pricePerMlINR).toFixed(2) + '/ml' : '') + '</div>' +
+              '<div style="font-size:0.85rem;font-weight:700;color:#67e8f9;margin-bottom:0.35rem;">₹' + Number(r.effectivePriceINR || r.currentPriceINR || 0).toLocaleString('en-IN') + (r.couponCode && r.currentPriceINR && r.effectivePriceINR < r.currentPriceINR ? ' <span style="text-decoration:line-through;color:#64748b;font-weight:400;">₹' + Number(r.currentPriceINR).toLocaleString('en-IN') + '</span>' : '') + (r.pricePerMlINR ? ' · ₹' + Number(r.pricePerMlINR).toFixed(2) + '/ml' : '') + '</div>' +
+              couponHtml +
               '<div style="font-size:0.78rem;color:#e2e8f0;margin-bottom:0.25rem;"><strong>Fit:</strong> ' + escFp(r.matchReasoning) + '</div>' +
               '<div style="font-size:0.76rem;color:#94a3b8;"><strong>Trade-off:</strong> ' + escFp(r.tradeOffs) + '</div>' +
               unv + yt +
@@ -1516,6 +1520,13 @@ export class StaticSiteGenerator {
             '<a href="' + escFp(r.trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" data-deal-id="' + escFp(r.dealId) + '" data-slot="' + escFp(r.slot) + '" onclick="trackDealsRecClick(this.dataset.dealId,this.dataset.slot)" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;padding:0.42rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.78rem;text-decoration:none;">' + escFp(r.ctaLabel) + '</a>' +
           '</div>';
         }).join('') + '</div>') : '';
+        var crossStoreRails = (Array.isArray(d.crossStoreOptions) ? d.crossStoreOptions : []).filter(function(o) { return o && o.affiliateNetwork !== 'CUELINKS' && o.affiliateNetwork !== 'DIRECT' && Number(o.currentPriceINR || 0) === 0 && o.trackingRedirectUrl; });
+        var crossStoreHtml = crossStoreRails.length > 0
+          ? '<div style="margin-top:0.65rem;padding:0.65rem 0.85rem;background:#111827;border:1px solid #334155;border-radius:8px;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">' +
+              '<span style="font-size:0.76rem;color:#cbd5e1;">' + escFp(crossStoreRails[0].disclosure || '') + '</span>' +
+              '<a href="' + escFp(crossStoreRails[0].trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" style="font-size:0.78rem;font-weight:700;color:#fcd34d;text-decoration:none;">' + escFp(crossStoreRails[0].ctaLabel || '') + '</a>' +
+            '</div>'
+          : '';
         var alertFormHtml = d.priceAlertsAvailable
           ? '<form onsubmit="handleFairPriceAlertSsr(event)" style="margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #1e293b;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">' +
               '<input type="number" id="fp-alert-price-ssr" min="1" required placeholder="Target ₹" value="' + (d.estimatedFairPriceINR ? Math.round(d.estimatedFairPriceINR * 0.9) : '') + '" style="width:110px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.82rem;">' +
@@ -1535,6 +1546,7 @@ export class StaticSiteGenerator {
             '<div style="font-size:0.9rem;color:#e2e8f0;margin-bottom:0.45rem;">' + escFp(d.verdictSummary) + '</div>' +
             (d.aiBuyerNote ? '<div style="font-size:0.82rem;color:#38bdf8;margin-bottom:0.5rem;"><strong>Assistant Note:</strong> ' + escFp(d.aiBuyerNote) + '</div>' : '') +
             recHtml +
+            crossStoreHtml +
             alertFormHtml +
           '</div>';
       } catch (err) {

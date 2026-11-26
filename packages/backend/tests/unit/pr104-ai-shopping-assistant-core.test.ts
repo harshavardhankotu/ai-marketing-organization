@@ -333,5 +333,194 @@ describe('PR #104 — AI Shopping Assistant Core', () => {
     expect(json.data.shoppingFunnel.window24h.affiliate_redirect).toBe(0);
     expect(json.data.shoppingFunnel.window7d.preference_submitted).toBe(1);
     expect(json.data.shoppingFunnel.window7d.affiliate_redirect).toBe(1);
+    expect(json.data.shoppingFunnel.status).toBe('OK');
+  });
+
+  it('handles avoidIngredients fragrance, live recalculated pricePerMlINR, merged Gemini+deterministic warnings, coupon fields, and Amazon rail with & without recommendations', async () => {
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const starterDeals = createHighIntentStarterDeals();
+    for (const d of starterDeals) {
+      (engine as any).dealsMap.set(d.id, { ...d });
+    }
+
+    // Inject stale pricePerMlINR on a deal whose live price changed
+    const serum = starterDeals[0];
+    const modifiedSerum = {
+      ...serum,
+      currentPriceINR: 300,
+      unitVolumeMl: 30,
+      pricePerMlINR: 99.99, // stale! live canonical must be 300/30 = 10.00
+      couponCode: 'GLOW10',
+      couponConditions: 'Min order ₹250',
+      evidenceJson: {
+        ...(serum.evidenceJson || {}),
+        rawSpecs: {
+          ...((serum.evidenceJson?.rawSpecs || {}) as Record<string, string>),
+          'Fragrance Profile': '' // unverified fragrance
+        }
+      }
+    };
+    (engine as any).dealsMap.set(serum.id, modifiedSerum);
+
+    const keySpy = vi.spyOn(GeminiProvider, 'getCandidateKeys').mockReturnValue(['test_gemini_key']);
+    const aiSpy = vi.spyOn(GeminiProvider.prototype, 'generateStructured').mockResolvedValueOnce({
+      data: {
+        buyerNote: 'Merged warnings check.',
+        cards: [
+          {
+            dealId: modifiedSerum.id,
+            matchReasoning: 'Good fit.',
+            tradeOffs: 'Check bottle size.',
+            unverifiedRequirements: ['Creator patch-test not verified.']
+          }
+        ]
+      },
+      model: 'gemini-2.5-flash',
+      latencyMs: 12
+    } as any);
+
+    const prevAmzTag = process.env.AMAZON_AFFILIATE_TAG;
+    process.env.AMAZON_AFFILIATE_TAG = 'testtag-21';
+
+    try {
+      const res = await app.request('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryOrUrl: 'niacinamide serum',
+          preferences: {
+            maxBudgetINR: 800,
+            activeIngredient: 'niacinamide',
+            avoidIngredients: ['Fragrance']
+          }
+        })
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as any;
+      const card = json.data.recommendations.find((r: any) => r.dealId === modifiedSerum.id);
+      expect(card).toBeDefined();
+      // Live recalculated 300 / 30 = 10 (never stale 99.99)
+      expect(card.pricePerMlINR).toBe(10);
+      // Coupon fields propagated
+      expect(card.couponCode).toBe('GLOW10');
+      expect(card.couponConditions).toBe('Min order ₹250');
+      // Both deterministic fragrance-free warning AND Gemini warning preserved
+      expect(card.unverifiedRequirements.some((w: string) => /fragrance/i.test(w))).toBe(true);
+      expect(card.unverifiedRequirements).toContain('Creator patch-test not verified.');
+      // Amazon rail present when recommendations exist
+      expect(json.data.crossStoreOptions.some((o: any) => o.isAmazonSearchRail && o.trackingRedirectUrl)).toBe(true);
+
+      // Empty recommendations still include Amazon rail when AMAZON_AFFILIATE_TAG is configured
+      const emptyRes = await app.request('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryOrUrl: 'zzznonexistent_skincare_xyz_999',
+          skipAiSynthesis: true
+        })
+      });
+      expect(emptyRes.status).toBe(200);
+      const emptyJson = (await emptyRes.json()) as any;
+      expect(emptyJson.data.recommendations.length).toBe(0);
+      expect(emptyJson.data.crossStoreOptions.some((o: any) => o.isAmazonSearchRail && o.trackingRedirectUrl)).toBe(true);
+
+      // Verify / and /deals HTML include coupon + crossStoreOptions rail rendering helpers
+      const dealsHtml = await (await app.request('/deals')).text();
+      expect(dealsHtml).toContain('crossStoreOptions');
+      expect(dealsHtml).toContain('r.couponCode');
+    } finally {
+      aiSpy.mockRestore();
+      keySpy.mockRestore();
+      if (prevAmzTag !== undefined) process.env.AMAZON_AFFILIATE_TAG = prevAmzTag;
+      else delete process.env.AMAZON_AFFILIATE_TAG;
+    }
+  });
+
+  it('excludes x-test-mode and x-internal-admin traffic, returns UNAVAILABLE on D1 read error, rate-limits /public/shopping-event, fixes /offer links, and returns generic IG DM when no social-allowed deal exists', async () => {
+    const { recordShoppingFunnelEvent, getShoppingFunnelSummaryAsync } = await import('../../src/commission/shopping-funnel-tracker.js');
+    const { D1RevenueRepository } = await import('../../src/db/d1-revenue-repository.js');
+    const { InstagramBusinessAdapter } = await import('../../src/integrations/instagram-business-adapter.js');
+
+    // 1. x-test-mode and x-internal-admin excluded
+    const testModeRes = await recordShoppingFunnelEvent({
+      event: 'shopping_page_view',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0',
+      clientIp: '203.0.113.10',
+      headers: { 'x-test-mode': '1' }
+    });
+    expect(testModeRes.recorded).toBe(false);
+    expect(testModeRes.reason).toBe('SKIPPED_test');
+
+    const internalAdminRes = await recordShoppingFunnelEvent({
+      event: 'shopping_page_view',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0',
+      clientIp: '203.0.113.10',
+      headers: { 'x-internal-admin': 'true' }
+    });
+    expect(internalAdminRes.recorded).toBe(false);
+    expect(internalAdminRes.reason).toBe('SKIPPED_internal');
+
+    // 2. D1 read failure returns status UNAVAILABLE (distinct from genuine 0)
+    const d1Repo = D1RevenueRepository.getInstance();
+    const cfgSpy = vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+    const querySpy = vi.spyOn(d1Repo, 'query').mockRejectedValueOnce(new Error('D1_READ_TIMEOUT'));
+    try {
+      const errSummary = await getShoppingFunnelSummaryAsync();
+      expect(errSummary.status).toBe('UNAVAILABLE');
+      expect(errSummary.error).toContain('D1_READ_TIMEOUT');
+    } finally {
+      cfgSpy.mockRestore();
+      querySpy.mockRestore();
+    }
+
+    // 3. /public/shopping-event rate limit (30/min per IP -> 31st returns 429)
+    const uniqueIp = `198.51.100.${Math.floor(Math.random() * 200) + 10}`;
+    let hit429 = false;
+    for (let i = 0; i < 32; i++) {
+      const r = await app.request('/api/v1/public/shopping-event', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-forwarded-for': uniqueIp,
+          'x-test-mode': '1'
+        },
+        body: JSON.stringify({ event: 'shopping_page_view', path: '/' })
+      });
+      if (r.status === 429) {
+        hit429 = true;
+        expect(r.headers.get('Retry-After')).toBeTruthy();
+        break;
+      }
+    }
+    expect(hit429).toBe(true);
+
+    // 4. Legacy /offer page has zero broken /#pilot-enquiry links
+    const offerHtml = await (await app.request('/offer')).text();
+    expect(offerHtml).not.toContain('/#pilot-enquiry');
+    expect(offerHtml).toContain('href="/contact"');
+
+    // 5. Instagram DM trigger never falls back to unapproved deals[0]
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const dealsSpy = vi.spyOn(engine, 'getEligiblePublicDeals').mockResolvedValueOnce({
+      deals: [
+        {
+          id: 'deal_unapproved_ig',
+          title: 'Unapproved Secret Serum',
+          currentPriceINR: 599,
+          socialMediaPublishersAllowed: 'UNKNOWN'
+        } as any
+      ],
+      total: 1
+    } as any);
+    try {
+      const igAdapter = InstagramBusinessAdapter.getInstance();
+      const dmReply = await igAdapter.buildCommentOrDmReply('DEAL');
+      expect(dmReply.triggered).toBe(true);
+      expect(dmReply.replyText).not.toContain('Unapproved Secret Serum');
+      expect(dmReply.replyText).not.toContain('/redirect');
+      expect(dmReply.replyText).toContain('/deals');
+    } finally {
+      dealsSpy.mockRestore();
+    }
   });
 });

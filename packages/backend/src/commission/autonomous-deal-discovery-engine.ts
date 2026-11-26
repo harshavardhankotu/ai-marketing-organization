@@ -253,6 +253,9 @@ export interface RecommendationCard {
   brand: string;
   currentPriceINR: number;
   effectivePriceINR: number;
+  couponCode?: string | null;
+  couponConditions?: string | null;
+  couponSavingsINR?: number;
   unitVolumeMl: number | null;
   pricePerMlINR: number | null;
   keyIngredients: string | null;
@@ -8679,16 +8682,25 @@ export class AutonomousDealDiscoveryEngine {
     const maxBudgetINR = (input.preferences?.maxBudgetINR && input.preferences.maxBudgetINR > 0)
       ? input.preferences.maxBudgetINR
       : parsedBudget;
+    const avoidIngredients = Array.isArray(input.preferences?.avoidIngredients)
+      ? input.preferences!.avoidIngredients.map(s => String(s).trim().toLowerCase()).filter(Boolean)
+      : [];
     const wantsFragranceFree = Boolean(input.preferences?.fragranceFree) ||
+      avoidIngredients.some(a => a === 'fragrance' || a.includes('fragrance')) ||
       /(?:fragrance[\s-]?free|avoid\s+fragrance|no\s+fragrance|without\s+fragrance)/i.test(rawSearchString);
     const wantsLightweight = /(?:lightweight|non[\s-]?greasy|non[\s-]?sticky|water[\s-]?light)/i.test(rawSearchString);
     const skinTypePref = (input.preferences?.skinType || (rawSearchString.match(/\b(oily|combination|dry|sensitive|beginner)\b/i)?.[1] || '')).trim().toLowerCase();
     const activePref = (input.preferences?.activeIngredient || (rawSearchString.match(/\b(niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|saffron)\b/i)?.[1] || '')).trim().toLowerCase();
     const prioritizeLowestPricePerMl = Boolean(input.preferences?.prioritizeLowestPricePerMl) ||
       /(?:₹\/ml|per\s*ml|best\s*value|cheapest\s*per\s*ml)/i.test(rawSearchString);
-    const avoidIngredients = Array.isArray(input.preferences?.avoidIngredients)
-      ? input.preferences!.avoidIngredients.map(s => String(s).trim().toLowerCase()).filter(Boolean)
-      : [];
+
+    const computeCanonicalPricePerMl = (d: NormalizedDeal): number | null => {
+      const unitVolumeMl = Number(d.unitVolumeMl ?? d.evidenceJson?.unitVolumeMl ?? 0) || null;
+      const currentPrice = Number(d.currentPriceINR || 0);
+      return (currentPrice > 0 && unitVolumeMl && unitVolumeMl > 0)
+        ? Number((currentPrice / unitVolumeMl).toFixed(2))
+        : null;
+    };
 
     const scoreShopperFit = (d: NormalizedDeal): number => {
       const specs = (d.evidenceJson?.rawSpecs || {}) as Record<string, string>;
@@ -8745,7 +8757,7 @@ export class AutonomousDealDiscoveryEngine {
           fitScore -= 60;
         }
       }
-      const mlPrice = Number(d.pricePerMlINR ?? d.evidenceJson?.pricePerMlINR ?? 0);
+      const mlPrice = computeCanonicalPricePerMl(d) ?? 0;
       if (fitScore > 0 && prioritizeLowestPricePerMl && mlPrice > 0) {
         fitScore += Math.max(0, Math.round(25 - mlPrice));
       }
@@ -8995,8 +9007,8 @@ export class AutonomousDealDiscoveryEngine {
       .map(d => ({ deal: d, fitScore: scoreShopperFit(d) }))
       .sort((a, b) => {
         if (b.fitScore !== a.fitScore) return b.fitScore - a.fitScore;
-        const aMl = Number(a.deal.pricePerMlINR ?? a.deal.evidenceJson?.pricePerMlINR ?? 999999);
-        const bMl = Number(b.deal.pricePerMlINR ?? b.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        const aMl = computeCanonicalPricePerMl(a.deal) ?? 999999;
+        const bMl = computeCanonicalPricePerMl(b.deal) ?? 999999;
         return aMl - bMl;
       });
 
@@ -9009,10 +9021,7 @@ export class AutonomousDealDiscoveryEngine {
       const opt = optionByDealId.get(deal.id);
       const specs = (deal.evidenceJson?.rawSpecs || {}) as Record<string, string>;
       const unitVolumeMl = Number(deal.unitVolumeMl ?? deal.evidenceJson?.unitVolumeMl ?? 0) || null;
-      const currentPrice = Number(deal.currentPriceINR || 0);
-      const pricePerMlINR = (currentPrice > 0 && unitVolumeMl && unitVolumeMl > 0)
-        ? (Number(deal.pricePerMlINR ?? deal.evidenceJson?.pricePerMlINR ?? 0) || Number((currentPrice / unitVolumeMl).toFixed(2)))
-        : null;
+      const pricePerMlINR = computeCanonicalPricePerMl(deal);
       const keyIngredients = specs['Key Ingredients'] || null;
       const rawFragranceProfile = specs['Fragrance Profile'] || null;
       const fragranceProfile = rawFragranceProfile || 'Not listed on merchant page';
@@ -9086,6 +9095,9 @@ export class AutonomousDealDiscoveryEngine {
         brand: deal.brand,
         currentPriceINR: Number(deal.currentPriceINR || 0),
         effectivePriceINR: opt?.effectivePriceINR ?? Number(deal.currentPriceINR || 0),
+        couponCode: opt?.couponCode ?? deal.couponCode ?? null,
+        couponConditions: opt?.couponConditions ?? deal.couponConditions ?? null,
+        couponSavingsINR: opt?.couponSavingsINR ?? 0,
         unitVolumeMl,
         pricePerMlINR,
         keyIngredients,
@@ -9112,8 +9124,8 @@ export class AutonomousDealDiscoveryEngine {
     const valuePool = fitRankedDeals.filter(x => !usedIds.has(x.deal.id));
     if (valuePool.length > 0) {
       const bestValue = [...valuePool].sort((a, b) => {
-        const aMl = Number(a.deal.pricePerMlINR ?? a.deal.evidenceJson?.pricePerMlINR ?? 999999);
-        const bMl = Number(b.deal.pricePerMlINR ?? b.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        const aMl = computeCanonicalPricePerMl(a.deal) ?? 999999;
+        const bMl = computeCanonicalPricePerMl(b.deal) ?? 999999;
         if (aMl !== bMl) return aMl - bMl;
         return Number(a.deal.currentPriceINR || 999999) - Number(b.deal.currentPriceINR || 999999);
       })[0];
@@ -9202,7 +9214,15 @@ export class AutonomousDealDiscoveryEngine {
               }
               if (Array.isArray(aiCard.unverifiedRequirements)) {
                 const cleaned = aiCard.unverifiedRequirements.map((s: any) => String(s || '').trim()).filter(Boolean);
-                if (cleaned.length > 0) target.unverifiedRequirements = cleaned;
+                if (cleaned.length > 0) {
+                  const merged = [...target.unverifiedRequirements];
+                  for (const item of cleaned) {
+                    if (!merged.some(m => m.toLowerCase() === item.toLowerCase())) {
+                      merged.push(item);
+                    }
+                  }
+                  target.unverifiedRequirements = merged;
+                }
               }
             }
           }
