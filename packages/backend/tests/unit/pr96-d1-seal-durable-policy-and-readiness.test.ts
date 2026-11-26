@@ -117,6 +117,7 @@ describe('PR #96: Seal D1 Leaks, Durable Storage Policy, Readiness Compatibility
       headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
     });
     expect(claimRes.status).toBe(200);
+    expect(recoverSpy).toHaveBeenCalledWith({ skipSystemDoctor: true });
     expect(cycleWasActiveDuringRecovery).toBe(true);
     expect(d1.isCycleActive()).toBe(false); // Guaranteed closed in finally
 
@@ -273,5 +274,170 @@ describe('PR #96: Seal D1 Leaks, Durable Storage Policy, Readiness Compatibility
     }
     expect(d1.isRemoteD1ReadQuotaExhausted()).toBe(true);
     expect(d1.isRemoteD1WriteQuotaExhausted()).toBe(false);
+  });
+
+  it('(f) /claim-and-run never calls runSelfHealingPass and sets doctorMaintenanceDue accurately', async () => {
+    const app = createTestApp();
+    const queue = DurableJobQueue.getInstance();
+    const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+    const { AutomationRegistryEngine } = await import('../../src/automation/automation-registry-engine.js');
+    const doctor = AutonomousSystemDoctor.getInstance();
+    const engine = AutomationRegistryEngine.getInstance();
+
+    vi.spyOn(queue, 'recoverStaleAndBlockedJobs').mockResolvedValue({} as any);
+    vi.spyOn(queue, 'enqueueJobsBatch').mockResolvedValue({ enqueuedCount: 0, existingCount: 0, failedCount: 0, errors: [] });
+    vi.spyOn(queue, 'getQueueStats').mockResolvedValue({ queued: 0, running: 0, completed: 0, failed: 0, blocked: 0 } as any);
+    vi.spyOn(doctor, 'getPublicSystemDoctorSummary').mockResolvedValue({ status: 'HEALTHY' } as any);
+    const healSpy = vi.spyOn(doctor, 'runSelfHealingPass').mockResolvedValue({} as any);
+
+    // 1. Busy cycle + stale/missing report -> never calls runSelfHealingPass, doctorMaintenanceDue: false
+    vi.spyOn(queue, 'claimDueJob')
+      .mockResolvedValueOnce({ id: 'job_safe_1', workflowId: 'quota_health_checks', leaseToken: 'lease_1' } as any)
+      .mockResolvedValue(null);
+    vi.spyOn(queue, 'completeJob').mockResolvedValue(undefined as any);
+    vi.spyOn(queue, 'getJobById').mockResolvedValue({ id: 'job_safe_1', workflowId: 'quota_health_checks', status: 'COMPLETED' } as any);
+    vi.spyOn(engine, 'executeWorkflow').mockResolvedValue({ status: 'COMPLETED', resultSummary: 'ok', durationMs: 5 } as any);
+    const reportSpy = vi.spyOn(doctor, 'getLastReport').mockReturnValue(null);
+
+    const busyRes = await app.request('/api/v1/cron/worker/claim-and-run', {
+      method: 'POST',
+      headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+    });
+    expect(busyRes.status).toBe(200);
+    const busyJson = await busyRes.json() as any;
+    expect(busyJson.claimed).toBe(true);
+    expect(busyJson.doctorMaintenanceDue).toBe(false);
+    expect(healSpy).not.toHaveBeenCalled();
+
+    // 2. Idle cycle + fresh report -> doctorMaintenanceDue: false
+    const freshIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    reportSpy.mockReturnValue({ startedAt: freshIso, completedAt: freshIso } as any);
+    const freshRes = await app.request('/api/v1/cron/worker/claim-and-run', {
+      method: 'POST',
+      headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+    });
+    expect(freshRes.status).toBe(200);
+    const freshJson = await freshRes.json() as any;
+    expect(freshJson.claimed).toBe(false);
+    expect(freshJson.doctorMaintenanceDue).toBe(false);
+    expect(healSpy).not.toHaveBeenCalled();
+
+    // 3. Idle cycle + expired report -> doctorMaintenanceDue: true, still never calls runSelfHealingPass
+    const expiredIso = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+    reportSpy.mockReturnValue({ startedAt: expiredIso, completedAt: expiredIso } as any);
+    const staleRes = await app.request('/api/v1/cron/worker/claim-and-run', {
+      method: 'POST',
+      headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+    });
+    expect(staleRes.status).toBe(200);
+    const staleJson = await staleRes.json() as any;
+    expect(staleJson.claimed).toBe(false);
+    expect(staleJson.doctorMaintenanceDue).toBe(true);
+    expect(healSpy).not.toHaveBeenCalled();
+  });
+
+  it('(g) /cron/recover enforces freshness cooldown, bounds Doctor inside startBackgroundCycle(2500), and handles budget exhaustion cleanly', async () => {
+    const app = createTestApp();
+    const d1 = D1Client.getInstance();
+    const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+    const doctor = AutonomousSystemDoctor.getInstance();
+
+    const freshIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const reportSpy = vi.spyOn(doctor, 'getLastReport').mockReturnValue({ startedAt: freshIso, completedAt: freshIso } as any);
+    const healSpy = vi.spyOn(doctor, 'runSelfHealingPass').mockResolvedValue({ ok: true } as any);
+
+    // 1. Fresh report skips maintenance
+    const skipRes = await app.request('/api/v1/cron/recover', {
+      method: 'POST',
+      headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemDoctorOnly: true })
+    });
+    expect(skipRes.status).toBe(200);
+    const skipJson = await skipRes.json() as any;
+    expect(skipJson.skipped).toBe(true);
+    expect(skipJson.reason).toBe('FRESH_REPORT');
+    expect(healSpy).not.toHaveBeenCalled();
+
+    // 2. Stale report runs bounded inside startBackgroundCycle(2500) and closes cycle in finally
+    const expiredIso = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+    reportSpy.mockReturnValue({ startedAt: expiredIso, completedAt: expiredIso } as any);
+    let cycleActiveDuringHeal = false;
+    healSpy.mockImplementationOnce(async () => {
+      cycleActiveDuringHeal = d1.isCycleActive();
+      return { ok: true } as any;
+    });
+
+    const runRes = await app.request('/api/v1/cron/recover', {
+      method: 'POST',
+      headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemDoctorOnly: true })
+    });
+    expect(runRes.status).toBe(200);
+    const runJson = await runRes.json() as any;
+    expect(runJson.skipped).toBe(false);
+    expect(cycleActiveDuringHeal).toBe(true);
+    expect(d1.isCycleActive()).toBe(false);
+
+    // 3. D1_BACKGROUND_BUDGET_EXCEEDED returns HTTP 200 BOUNDED_PARTIAL and still closes cycle
+    healSpy.mockRejectedValueOnce(new Error('D1_BACKGROUND_BUDGET_EXCEEDED: cycle cap reached'));
+    const budgetRes = await app.request('/api/v1/cron/recover', {
+      method: 'POST',
+      headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemDoctorOnly: true })
+    });
+    expect(budgetRes.status).toBe(200);
+    const budgetJson = await budgetRes.json() as any;
+    expect(budgetJson.status).toBe('BOUNDED_PARTIAL');
+    expect(budgetJson.budgetExceeded).toBe(true);
+    expect(d1.isCycleActive()).toBe(false);
+  });
+
+  it('(h) Cloudflare Worker calls /cron/recover only when doctorMaintenanceDue === true and isolates maintenance timeout/error', async () => {
+    const workerMod = await import('../../../cloudflare-worker/src/worker.js');
+    const worker = workerMod.default;
+    const origFetch = globalThis.fetch;
+    const calls: string[] = [];
+
+    const mockEnv = {
+      BACKEND_URL: 'https://ai-marketing-organization.onrender.com',
+      CRON_PING_SECRET: 'cron_ping_fixture_dev'
+    };
+
+    try {
+      // 1. doctorMaintenanceDue: false -> only /ping and /claim-and-run called
+      globalThis.fetch = vi.fn(async (input: any) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.includes('/cron/ping')) {
+          return new Response(JSON.stringify({ success: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ success: true, claimed: false, doctorMaintenanceDue: false }), { status: 200 });
+      }) as any;
+
+      let pending: Promise<unknown> | undefined;
+      await worker.scheduled({} as any, mockEnv, { waitUntil: (p: Promise<unknown>) => { pending = p; } } as any);
+      await pending;
+      expect(calls.some(u => u.includes('/cron/recover'))).toBe(false);
+
+      // 2. doctorMaintenanceDue: true + /cron/recover throws timeout -> non-fatal, scheduled run resolves cleanly
+      calls.length = 0;
+      globalThis.fetch = vi.fn(async (input: any) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.includes('/cron/ping')) {
+          return new Response(JSON.stringify({ success: true }), { status: 200 });
+        }
+        if (url.includes('/claim-and-run')) {
+          return new Response(JSON.stringify({ success: true, claimed: false, doctorMaintenanceDue: true }), { status: 200 });
+        }
+        throw new Error('AbortError: signal timed out');
+      }) as any;
+
+      await worker.scheduled({} as any, mockEnv, { waitUntil: (p: Promise<unknown>) => { pending = p; } } as any);
+      await expect(pending).resolves.toBeUndefined();
+      expect(calls.some(u => u.includes('/cron/recover'))).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });

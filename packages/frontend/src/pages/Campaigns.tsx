@@ -475,16 +475,16 @@ export const Campaigns: React.FC<CampaignsProps> = ({
             ) : (
               <ul className="space-y-1">
                 {comparisons.slice(0, 4).map((c: any, idx: number) => {
-                  const slug = c.comparisonSlug || c.slug || '';
+                  const cmpSlug = String(c?.comparisonSlug || c?.slug || '').trim();
                   return (
-                    <li key={slug || `cmp_${idx}`} className="flex items-center justify-between gap-2">
-                      <span className="truncate text-slate-300">{c.title || slug}</span>
-                      {slug && (
-                        <a href={`/vs/${encodeURIComponent(slug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                    <li key={`${cmpSlug || c?.title || 'cmp'}_${idx}`} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-300">{c.title || cmpSlug || 'Comparison'}</span>
+                      {cmpSlug ? (
+                        <a href={`/vs/${encodeURIComponent(cmpSlug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
                           <span>Open</span>
                           <ExternalLink className="w-3 h-3" />
                         </a>
-                      )}
+                      ) : null}
                     </li>
                   );
                 })}
@@ -498,16 +498,16 @@ export const Campaigns: React.FC<CampaignsProps> = ({
             ) : (
               <ul className="space-y-1">
                 {buyerGuides.slice(0, 4).map((g: any, idx: number) => {
-                  const slug = g.intentSlug || g.slug || '';
+                  const guideSlug = String(g?.intentSlug || g?.slug || '').trim();
                   return (
-                    <li key={slug || `guide_${idx}`} className="flex items-center justify-between gap-2">
-                      <span className="truncate text-slate-300">{g.title || g.h1 || slug}</span>
-                      {slug && (
-                        <a href={`/best/${encodeURIComponent(slug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                    <li key={`${guideSlug || g?.title || 'guide'}_${idx}`} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-300">{g.title || g.h1 || guideSlug || 'Buyer Guide'}</span>
+                      {guideSlug ? (
+                        <a href={`/best/${encodeURIComponent(guideSlug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
                           <span>Open</span>
                           <ExternalLink className="w-3 h-3" />
                         </a>
-                      )}
+                      ) : null}
                     </li>
                   );
                 })}

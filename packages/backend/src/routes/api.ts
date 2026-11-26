@@ -1467,7 +1467,7 @@ apiRouter.get('/cron/status', async (c) => {
   const totalPings = Number(row?.total_pings || 0);
   const lastPingMs = parseSqliteTimestampMs(row?.last_observed_ping);
   const now = Date.now();
-  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (75 * 60 * 1000);
+  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (13 * 60 * 60 * 1000);
   const heartbeatAgeMinutes = lastPingMs > 0 ? Math.round((now - lastPingMs) / 60000) : null;
 
   // Retrieve durable queue statistics from Cloudflare D1
@@ -1839,9 +1839,20 @@ apiRouter.post('/cron/ping', async (c) => {
   }, 200);
 });
 
-// POST /cron/recover — Clears >24h stale QUEUED jobs & parked-workflow BLOCKED jobs cleanly, and optionally hydrates Cuelinks payouts
+const SYSTEM_DOCTOR_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+
+function isSystemDoctorReportFresh(report: { completedAt?: string | null; startedAt?: string | null } | null | undefined, nowMs: number = Date.now()): boolean {
+  if (!report) return false;
+  const rawTs = report.completedAt || report.startedAt || '';
+  const tsMs = rawTs ? Date.parse(rawTs) : NaN;
+  if (!Number.isFinite(tsMs)) return false;
+  const ageMs = nowMs - tsMs;
+  return ageMs >= 0 && ageMs < SYSTEM_DOCTOR_FRESHNESS_MS;
+}
+
+// POST /cron/recover — Clears >24h stale QUEUED jobs & parked-workflow BLOCKED jobs cleanly, runs bounded System Doctor when stale, and optionally hydrates Cuelinks payouts
 apiRouter.post('/cron/recover', async (c) => {
-  const secret = c.req.header('X-Cron-Secret');
+  const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
   if (isProduction()) {
     const expectedSecret = process.env.CRON_PING_SECRET;
     if (!expectedSecret || isPlaceholderCredential(expectedSecret) || expectedSecret === 'cron_ping_default_dev') {
@@ -1858,26 +1869,83 @@ apiRouter.post('/cron/recover', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as any));
-  const rawThreshold = Number(body?.staleHoursThreshold);
-  const staleHoursThreshold = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : undefined;
-  const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
-  const queueRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({ staleHoursThreshold });
+  const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
+  const doctor = AutonomousSystemDoctor.getInstance();
+  const lastReport = doctor.getLastReport();
+  if (isSystemDoctorReportFresh(lastReport) && body?.force !== true) {
+    return c.json({
+      success: true,
+      skipped: true,
+      reason: 'FRESH_REPORT',
+      lastReport,
+      timestamp: new Date().toISOString()
+    });
+  }
 
+  const { D1Client } = await import('../db/d1-client.js');
+  const d1Client = D1Client.getInstance();
+  d1Client.startBackgroundCycle(2500);
+
+  let queueRecovery: any = null;
+  let doctorReport: any = null;
   let cuelinksHydration: any = null;
-  if (body?.hydrateCuelinksPayouts === true) {
-    try {
-      const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-      const hydrationLimit = Number.isFinite(Number(body?.limit)) && Number(body?.limit) > 0 ? Math.min(200, Number(body?.limit)) : 100;
-      cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', hydrationLimit);
-    } catch (err: any) {
-      cuelinksHydration = { error: err?.message || 'Cuelinks hydration failed' };
+  let budgetExceeded = false;
+  let cycleTelemetry: any = null;
+
+  try {
+    if (body?.systemDoctorOnly !== true) {
+      const rawThreshold = Number(body?.staleHoursThreshold);
+      const staleHoursThreshold = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : undefined;
+      const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
+      queueRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({
+        staleHoursThreshold,
+        skipSystemDoctor: true
+      });
     }
+
+    doctorReport = await doctor.runSelfHealingPass({
+      skipRecoveryRecursion: true,
+      skipLlm: true
+    });
+
+    if (body?.hydrateCuelinksPayouts === true) {
+      try {
+        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+        const hydrationLimit = Number.isFinite(Number(body?.limit)) && Number(body?.limit) > 0 ? Math.min(200, Number(body?.limit)) : 100;
+        cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', hydrationLimit);
+      } catch (err: any) {
+        cuelinksHydration = { error: err?.message || 'Cuelinks hydration failed' };
+      }
+    }
+  } catch (err: any) {
+    if (String(err?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
+      budgetExceeded = true;
+    } else {
+      throw err;
+    }
+  } finally {
+    cycleTelemetry = d1Client.endBackgroundCycle();
+  }
+
+  if (budgetExceeded || cycleTelemetry?.budgetStopped) {
+    return c.json({
+      success: true,
+      status: 'BOUNDED_PARTIAL',
+      budgetExceeded: true,
+      queueRecovery,
+      doctorReport,
+      d1CycleTelemetry: cycleTelemetry,
+      timestamp: new Date().toISOString()
+    });
   }
 
   return c.json({
     success: true,
+    skipped: false,
     queueRecovery,
+    doctorReport,
     cuelinksHydration,
+    d1CycleTelemetry: cycleTelemetry,
     timestamp: new Date().toISOString()
   });
 });
@@ -1918,13 +1986,15 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   let timedOutCount = 0;
   let failedCount = 0;
   let systemDoctorSummary: any = null;
+  let doctorMaintenanceDue = false;
+  let lastDoctorReport: any = null;
   let stats: any = null;
   let cycleTelemetry: any = null;
   let budgetStopped = false;
 
   try {
     try {
-      queueRecovery = await queue.recoverStaleAndBlockedJobs();
+      queueRecovery = await queue.recoverStaleAndBlockedJobs({ skipSystemDoctor: true });
     } catch (recErr: any) {
       if (String(recErr?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
         budgetStopped = true;
@@ -2013,14 +2083,13 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     }
 
     const ensureSystemDoctorSummary = async () => {
-      if (queueRecovery?.systemDoctorSummary) return queueRecovery.systemDoctorSummary;
-      if (budgetStopped || d1Client.isCycleBudgetExceeded()) return null;
       try {
         const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
         const doctor = AutonomousSystemDoctor.getInstance();
-        if (!process.env.VITEST && !doctor.getLastReport()) {
-          await doctor.runSelfHealingPass({ skipRecoveryRecursion: true, skipLlm: true });
-        }
+        lastDoctorReport = doctor.getLastReport();
+        doctorMaintenanceDue = executedJobs.length === 0 && !isSystemDoctorReportFresh(lastDoctorReport);
+        if (queueRecovery?.systemDoctorSummary) return queueRecovery.systemDoctorSummary;
+        if (budgetStopped || d1Client.isCycleBudgetExceeded()) return null;
         return await doctor.getPublicSystemDoctorSummary();
       } catch {
         return null;
@@ -2066,6 +2135,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       budgetStopped: cycleTelemetry?.budgetStopped || budgetStopped,
       message: budgetStopped ? 'D1_BACKGROUND_BUDGET_EXCEEDED' : 'NO_JOBS_DUE',
       queueStats: stats,
+      doctorMaintenanceDue,
+      lastDoctorReport,
       systemDoctorSummary,
       d1CycleTelemetry: cycleTelemetry
     });
@@ -2105,6 +2176,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     elapsedMs: Date.now() - startTime,
     job: finalJob,
     executionResult: lastExecResult,
+    doctorMaintenanceDue,
+    lastDoctorReport,
     systemDoctorSummary,
     d1CycleTelemetry: cycleTelemetry
   });
@@ -8093,6 +8166,23 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     }
   };
 
+  const safeQueryAll = async <T = any>(
+    table: string,
+    sql: string,
+    params: any[] = [],
+    queryName: string
+  ): Promise<{ ok: true; rows: T[] } | { ok: false; rows: T[] }> => {
+    try {
+      const rows = await d1Repo.query<T>(table, sql, params);
+      return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+    } catch (err: any) {
+      console.warn(`[RevenueFunnel] Multi-row query '${queryName}' failed:`, err.message);
+      failedQueries.push(queryName);
+      measurementStatus = 'DEGRADED_DB_ERROR';
+      return { ok: false, rows: [] };
+    }
+  };
+
   // Non-cash metrics (traffic, clicks, CTR, Cuelinks summary, prospects, drafts, proposals, audits, monetized partners)
   // are cached in memory for 10 minutes to protect Cloudflare D1 free tier read quotas.
   let verifiedExternalVisits = 0;
@@ -8559,7 +8649,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let checkoutInitiated = 0;
   let paymentOrdersCreated = 0;
   let paymentAuthorized = 0;
-  let paymentCaptured = 0;
+  let paymentCaptured: number | null = 0;
+  let paymentCapturedStatus: 'VERIFIED' | 'UNAVAILABLE' = 'VERIFIED';
   let fulfilmentsPending = 0;
   let fulfilmentsCompleted = 0;
   let fulfilmentsFailed = 0;
@@ -8573,6 +8664,27 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     console.warn('[RevenueFunnel] SiteFix funnel attribution query failed:', err.message);
   }
   const sfxTotals = sitefixAttribution?.totals;
+
+  // Shared test-mode predicates used by both the authoritative ledger UNION and fallback capture classification
+  const UNIVERSAL_ORDER_TEST_PREDICATE = `
+    is_test = 1
+    OR status IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
+    OR COALESCE(metadata_json, '') LIKE '%TEST_SANDBOX%'
+    OR COALESCE(metadata_json, '') LIKE '%rzp_test%'
+    OR COALESCE(metadata_json, '') LIKE '%"is_test":true%'
+    OR COALESCE(metadata_json, '') LIKE '%"isTest":true%'
+    OR COALESCE(metadata_json, '') LIKE '%"test":true%'
+  `;
+  const PAYMENT_ORDER_TEST_PREDICATE = `
+    status IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
+    OR COALESCE(notes_json, '') LIKE '%"is_test":true%'
+    OR COALESCE(notes_json, '') LIKE '%"isTest":true%'
+    OR COALESCE(notes_json, '') LIKE '%"test":true%'
+    OR COALESCE(notes_json, '') LIKE '%TEST_SANDBOX%'
+    OR COALESCE(notes_json, '') LIKE '%rzp_test%'
+    OR COALESCE(notes_json, '') LIKE '%"mode":"test"%'
+    OR COALESCE(notes_json, '') LIKE '%"sandbox":"true"%'
+  `;
 
   // Single Authoritative Provider-Verified Ledger Query (Stage U.1 Truth: zero Math.max, zero double-counting across tables)
   const orderLedgerQuery = `
@@ -8588,7 +8700,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         status, 
         (amount_minor / 100.0) as amount_inr 
       FROM universal_orders 
-      WHERE is_test = 0 AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')
+      WHERE NOT (${UNIVERSAL_ORDER_TEST_PREDICATE})
+        AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')
       UNION
       SELECT 
         order_id, 
@@ -8596,9 +8709,9 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         amount_inr 
       FROM payment_orders 
       WHERE (notes_json LIKE '%SITEFIX%' OR notes_json LIKE '%sitefix%') 
-        AND (notes_json NOT LIKE '%"is_test":true%' AND notes_json NOT LIKE '%"test":true%')
+        AND NOT (${PAYMENT_ORDER_TEST_PREDICATE})
         AND order_id NOT IN (
-          SELECT id FROM universal_orders WHERE is_test = 0
+          SELECT id FROM universal_orders
         )
     )
   `;
@@ -8633,8 +8746,9 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     console.warn('[RevenueFunnel] Error querying durable_events for refunds:', durableErr.message);
   }
 
+  const ledgerOk = orderLedger !== null;
   const totalLedgerOrders = Number(orderLedger?.totalOrders ?? 0);
-  const ledgerCapturedCount = Number(orderLedger?.capturedCount ?? 0);
+  const ledgerCapturedCount = ledgerOk ? Number(orderLedger?.capturedCount ?? 0) : 0;
   saasGrossCapturedINR = Number(orderLedger?.grossCapturedINR ?? 0.00);
   const refundsCount = durableRefundCount > 0 ? durableRefundCount : Number(orderLedger?.refundCount ?? 0);
   const refundAmountINR = durableRefundAmountINR > 0 ? durableRefundAmountINR : Number(orderLedger?.refundAmountINR ?? 0.00);
@@ -8644,7 +8758,71 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const checkoutOpenInvokedCount = Number(sfxTotals?.checkout_open_invoked ?? 0);
   const checkoutModalOpenedCount = Number(sfxTotals?.checkout_modal_opened ?? 0);
   checkoutInitiated = checkoutOpenInvokedCount || checkoutModalOpenedCount;
-  paymentCaptured = ledgerCapturedCount || Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
+  const rawCapturedMetric = sfxTotals ? (sfxTotals.payment_captured ?? sfxTotals.capture) : undefined;
+  const attributionAuthoritative = Boolean(
+    sitefixAttribution &&
+    sfxTotals &&
+    !sitefixAttribution.persistenceWarning &&
+    rawCapturedMetric !== undefined &&
+    rawCapturedMetric !== null &&
+    Number.isFinite(Number(rawCapturedMetric))
+  );
+
+  if (ledgerOk && ledgerCapturedCount > 0) {
+    paymentCaptured = ledgerCapturedCount;
+    paymentCapturedStatus = 'VERIFIED';
+  } else if (!ledgerOk || !attributionAuthoritative) {
+    paymentCaptured = null;
+    paymentCapturedStatus = 'UNAVAILABLE';
+  } else {
+    const rawEventCaptured = Number(rawCapturedMetric);
+    if (rawEventCaptured === 0) {
+      paymentCaptured = 0;
+      paymentCapturedStatus = 'VERIFIED';
+    } else {
+      const capRes = await safeQueryAll<{ payload_json: string }>(
+        'durable_events',
+        `SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' AND (payload_json LIKE '%"payment_captured"%' OR payload_json LIKE '%"capture"%')`,
+        [],
+        'durable_events.sitefix_capture_filter'
+      );
+      const testOrdersRes = await safeQueryAll<{ id: string }>(
+        'universal_orders',
+        `SELECT id FROM universal_orders WHERE ${UNIVERSAL_ORDER_TEST_PREDICATE}`,
+        [],
+        'universal_orders.test_sandbox_ids'
+      );
+      const testPaymentOrdersRes = await safeQueryAll<{ order_id: string }>(
+        'payment_orders',
+        `SELECT order_id FROM payment_orders WHERE ${PAYMENT_ORDER_TEST_PREDICATE}`,
+        [],
+        'payment_orders.test_sandbox_ids'
+      );
+      if (!capRes.ok || !testOrdersRes.ok || !testPaymentOrdersRes.ok) {
+        paymentCaptured = null;
+        paymentCapturedStatus = 'UNAVAILABLE';
+      } else {
+        const testOrderIds = new Set([
+          ...testOrdersRes.rows.map((r: any) => String(r?.id || '').trim()).filter(Boolean),
+          ...testPaymentOrdersRes.rows.map((r: any) => String(r?.order_id || '').trim()).filter(Boolean)
+        ]);
+        let nonTestCaptures = 0;
+        for (const row of capRes.rows) {
+          try {
+            const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+            const st = String(p?.stage || '').toLowerCase();
+            if (st !== 'payment_captured' && st !== 'capture') continue;
+            if (p?.isProbe === true || p?.isTest === true || String(p?.mode || '').toUpperCase() === 'TEST_SANDBOX') continue;
+            const ordId = String(p?.orderId || '').trim();
+            if (ordId && testOrderIds.has(ordId)) continue;
+            nonTestCaptures++;
+          } catch {}
+        }
+        paymentCaptured = nonTestCaptures;
+        paymentCapturedStatus = 'VERIFIED';
+      }
+    }
+  }
   // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
   fixPackPreviews = Number(sfxTotals?.preview_displayed ?? 0);
   const deliverableReadyCount = Number(sfxTotals?.deliverable_ready ?? sfxTotals?.delivery ?? 0);
@@ -8771,6 +8949,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         paymentOrdersCreated,
         paymentAuthorized,
         paymentCaptured,
+        paymentCapturedStatus,
         fulfilmentsPending,
         fulfilmentsCompleted,
         deliverable_ready: deliverableReadyCount,
@@ -9577,6 +9756,8 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   } catch {}
 
   let systemDoctorSummary: any = null;
+  let doctorMaintenanceDue = false;
+  let lastDoctorReport: any = null;
   try {
     const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
     systemDoctorSummary = await AutonomousSystemDoctor.getInstance().getPublicSystemDoctorSummary();

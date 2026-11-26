@@ -650,4 +650,304 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     expect(res2.headers.get('content-type')).toContain('text/plain');
     expect(await res2.text()).toBe('ai-marketing-indexnow-key');
   });
+
+  it('17. TEST_SANDBOX order capture events do not increment live payment_captured in /revenue-funnel', async () => {
+    const db = getDb();
+    const sandboxOrderId = 'ord_rzp_sandbox_test_1';
+    db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`DROP TABLE IF EXISTS payment_orders_temp_backup`).run();
+    db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+    db.prepare(`ALTER TABLE payment_orders RENAME TO payment_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE payment_orders AS SELECT * FROM payment_orders_temp_backup WHERE 0`).run();
+
+    try {
+      db.prepare(`
+        INSERT INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+          amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+          fulfillment_status, metadata_json, is_test, created_at, updated_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'SiteFix Customer', 'test@example.com', '',
+          49900, 'INR', 'TEST_CAPTURED', 'RAZORPAY', 'order_sandbox_1', 'pay_sandbox_1',
+          'DELIVERABLE_READY_EMAIL_PENDING', '{"mode":"TEST_SANDBOX","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+        )
+      `).run(sandboxOrderId);
+
+      await recordSiteFixFunnelEvent({
+        stage: 'capture',
+        source: 'web',
+        isProbe: false,
+        orderId: sandboxOrderId,
+        paymentId: 'pay_sandbox_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+
+      const funnelRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(funnelRes.status).toBe(200);
+      const funnelJson = await funnelRes.json();
+      expect(funnelJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(0);
+      expect(funnelJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(0);
+
+      const preserved = db.prepare(`SELECT id, status FROM universal_orders WHERE id = ?`).get(sandboxOrderId) as any;
+      expect(preserved?.status).toBe('TEST_CAPTURED');
+
+      // 17b/c: Live capture + similar-looking non-test capture stored alongside sandbox row (sandbox row first) ARE counted
+      const liveLookalikeOrderId = 'ord_rzp_live_lookalike_1';
+      db.prepare(`
+        INSERT INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+          amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+          fulfillment_status, metadata_json, is_test, created_at, updated_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Live Buyer', 'buyer@example.com', '',
+          49900, 'INR', 'CHECKOUT', 'RAZORPAY', 'order_live_1', 'pay_live_1',
+          'PENDING', '{"mode":"LIVE","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+        )
+      `).run(liveLookalikeOrderId);
+
+      await recordSiteFixFunnelEvent({
+        stage: 'payment_captured',
+        source: 'web',
+        isProbe: false,
+        orderId: liveLookalikeOrderId,
+        paymentId: 'pay_live_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+
+      const multiRowRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(multiRowRes.status).toBe(200);
+      const multiRowJson = await multiRowRes.json();
+      expect(multiRowJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+      expect(multiRowJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+      expect(multiRowJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+      expect(db.prepare(`SELECT id FROM universal_orders WHERE id = ?`).get(sandboxOrderId)).toBeDefined();
+      expect(db.prepare(`SELECT id FROM universal_orders WHERE id = ?`).get(liveLookalikeOrderId)).toBeDefined();
+
+      // 17d: Classification lookup failure fails safely without falling back to rawEventCaptured
+      const repo = D1RevenueRepository.getInstance();
+      const origQuery = repo.query.bind(repo);
+      const querySpy = vi.spyOn(repo, 'query').mockImplementation(async (table: string, sql: string, params?: any[]) => {
+        if (table === 'universal_orders' && sql.includes('TEST_CAPTURED')) {
+          throw new Error('D1 classification lookup failed');
+        }
+        return origQuery(table, sql, params);
+      });
+      try {
+        const failRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(failRes.status).toBe(200);
+        const failJson = await failRes.json();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        querySpy.mockRestore();
+      }
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
+      db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+      db.prepare(`DROP TABLE IF EXISTS payment_orders`).run();
+      db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
+    }
+  });
+
+  it('18. Distinguishes authoritative zero from missing/degraded attribution and preserves positive ledger captures', async () => {
+    const db = getDb();
+    db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`DROP TABLE IF EXISTS payment_orders_temp_backup`).run();
+    db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+    db.prepare(`ALTER TABLE payment_orders RENAME TO payment_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE payment_orders AS SELECT * FROM payment_orders_temp_backup WHERE 0`).run();
+
+    try {
+      // (a) Successful authoritative zero
+      const zeroRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(zeroRes.status).toBe(200);
+      const zeroJson = await zeroRes.json();
+      expect(zeroJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(0);
+      expect(zeroJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(0);
+      expect(zeroJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+
+      // (b) Attribution lookup throws / sfxTotals missing -> UNAVAILABLE (null)
+      const sfaModule = await import('../../src/tools/site-audit/sitefix-funnel-attribution.js');
+      const throwSpy = vi.spyOn(sfaModule, 'getSiteFixFunnelAttributionSummaryAsync').mockRejectedValueOnce(new Error('D1 attribution read error'));
+      try {
+        const errRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(errRes.status).toBe(200);
+        const errJson = await errRes.json();
+        expect(errJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(errJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(errJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        throwSpy.mockRestore();
+      }
+
+      // (c) Attribution returns SQLite fallback summary with persistenceWarning -> UNAVAILABLE (null)
+      // Keep the persistenceWarning spy active across BOTH empty-ledger and positive-ledger requests
+      const degradedSummary = await sfaModule.getSiteFixFunnelAttributionSummaryAsync();
+      const warnSpy = vi.spyOn(sfaModule, 'getSiteFixFunnelAttributionSummaryAsync').mockResolvedValue({
+        ...degradedSummary,
+        persistenceWarning: 'D1 read failed (simulated); showing local fallback'
+      });
+      try {
+        const warnRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(warnRes.status).toBe(200);
+        const warnJson = await warnRes.json();
+        expect(warnJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(warnJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(warnJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+
+        // (d) Sandbox CAPTURED + is_test=0 rows in BOTH universal_orders and payment_orders are excluded
+        db.prepare(`
+          INSERT INTO universal_orders (
+            id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+            amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+            fulfillment_status, metadata_json, is_test, created_at, updated_at
+          ) VALUES (
+            'ord_rzp_sandbox_captured_0', 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Sandbox Buyer', 'sandbox@example.com', '',
+            49900, 'INR', 'CAPTURED', 'RAZORPAY', 'order_sbx_0', 'pay_sbx_0',
+            'DELIVERED', '{"mode":"TEST_SANDBOX","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+          )
+        `).run();
+        db.prepare(`
+          INSERT INTO payment_orders (
+            id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at
+          ) VALUES (
+            'po_sandbox_captured_0', 'biz_platform_aro', 'order_po_sbx_0', 499, 'INR', 'CAPTURED', 'rcpt_sbx_0',
+            '{"sku":"SITEFIX_AI_PACK_V1","mode":"TEST_SANDBOX"}', datetime('now'), datetime('now')
+          )
+        `).run();
+
+        warnSpy.mockRestore();
+        const sandboxOnlyRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(sandboxOnlyRes.status).toBe(200);
+        const sandboxOnlyJson = await sandboxOnlyRes.json();
+        expect(sandboxOnlyJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(0);
+        expect(sandboxOnlyJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(0);
+        expect(sandboxOnlyJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+
+        // (e) Positive authoritative ledger capture still counted even while degraded persistenceWarning spy is active
+        const posWarnSpy = vi.spyOn(sfaModule, 'getSiteFixFunnelAttributionSummaryAsync').mockResolvedValue({
+          ...degradedSummary,
+          persistenceWarning: 'D1 read failed (simulated); showing local fallback'
+        });
+        try {
+          db.prepare(`
+            INSERT INTO universal_orders (
+              id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+              amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+              fulfillment_status, metadata_json, is_test, created_at, updated_at
+            ) VALUES (
+              'ord_rzp_auth_live_1', 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Auth Buyer', 'auth@example.com', '',
+              49900, 'INR', 'CAPTURED', 'RAZORPAY', 'order_auth_1', 'pay_auth_1',
+              'DELIVERED', '{"mode":"LIVE","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+            )
+          `).run();
+
+          const posRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+          expect(posRes.status).toBe(200);
+          const posJson = await posRes.json();
+          expect(posJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+          expect(posJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+          expect(posJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+          expect(posWarnSpy).toHaveBeenCalled();
+        } finally {
+          posWarnSpy.mockRestore();
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
+      db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+      db.prepare(`DROP TABLE IF EXISTS payment_orders`).run();
+      db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
+    }
+  });
+
+  it('19. Excludes test payment_orders captures in fallback while retaining live payment_orders captures and failing closed on lookup error', async () => {
+    const db = getDb();
+    db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`DROP TABLE IF EXISTS payment_orders_temp_backup`).run();
+    db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+    db.prepare(`ALTER TABLE payment_orders RENAME TO payment_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE payment_orders AS SELECT * FROM payment_orders_temp_backup WHERE 0`).run();
+
+    try {
+      const testPoOrderId = 'order_po_legacy_test_1';
+      const livePoOrderId = 'order_po_legacy_live_1';
+      db.prepare(`
+        INSERT INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at
+        ) VALUES (
+          'po_legacy_test_1', 'biz_platform_aro', ?, 1, 'INR', 'CREATED', 'rcpt_test_1',
+          '{"sku":"SITEFIX_AI_TEST_V1","sandbox":"true"}', datetime('now'), datetime('now')
+        )
+      `).run(testPoOrderId);
+      db.prepare(`
+        INSERT INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at
+        ) VALUES (
+          'po_legacy_live_1', 'biz_platform_aro', ?, 499, 'INR', 'CREATED', 'rcpt_live_1',
+          '{"sku":"SITEFIX_AI_PACK_V1","mode":"live"}', datetime('now'), datetime('now')
+        )
+      `).run(livePoOrderId);
+
+      // Event payloads carry no test marker themselves; classification relies on payment_orders lookup
+      await recordSiteFixFunnelEvent({
+        stage: 'capture',
+        source: 'web',
+        isProbe: false,
+        orderId: testPoOrderId,
+        paymentId: 'pay_po_test_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+      await recordSiteFixFunnelEvent({
+        stage: 'payment_captured',
+        source: 'web',
+        isProbe: false,
+        orderId: livePoOrderId,
+        paymentId: 'pay_po_live_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+
+      const res = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+      expect(json.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+      expect(json.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+
+      // Fail closed when payment_orders test-ID lookup fails
+      const repo = D1RevenueRepository.getInstance();
+      const origQuery = repo.query.bind(repo);
+      const failSpy = vi.spyOn(repo, 'query').mockImplementation(async (table: string, sql: string, params?: any[]) => {
+        if (table === 'payment_orders' && sql.includes('TEST_PAYMENT_CAPTURED')) {
+          throw new Error('payment_orders lookup failed');
+        }
+        return origQuery(table, sql, params);
+      });
+      try {
+        const failRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(failRes.status).toBe(200);
+        const failJson = await failRes.json();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        failSpy.mockRestore();
+      }
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
+      db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+      db.prepare(`DROP TABLE IF EXISTS payment_orders`).run();
+      db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
+    }
+  });
 });

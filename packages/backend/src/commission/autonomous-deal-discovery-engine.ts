@@ -1150,7 +1150,7 @@ export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
     brand: 'Dot & Key',
     sectorCode: 'SECTOR_G_LIFESTYLE',
     category: 'Health & Beauty',
-    cuelinksCampaignId: '3812'
+    cuelinksCampaignId: '4879'
   },
   {
     domain: 'kamaayurveda.in',
@@ -1158,7 +1158,15 @@ export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
     brand: 'Kama Ayurveda',
     sectorCode: 'SECTOR_G_LIFESTYLE',
     category: 'Health & Beauty',
-    cuelinksCampaignId: '2981'
+    cuelinksCampaignId: '4161'
+  },
+  {
+    domain: 'plumgoodness.com',
+    name: 'Plum Goodness',
+    brand: 'Plum',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '4098'
   },
   {
     domain: 'mcaffeine.com',
@@ -1175,15 +1183,6 @@ export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
     sectorCode: 'SECTOR_G_LIFESTYLE',
     category: 'Health & Beauty',
     cuelinksCampaignId: '2215'
-  },
-  // SECTOR_E_SOFTWARE
-  {
-    domain: 'appsumo.com',
-    name: 'AppSumo',
-    brand: 'AppSumo',
-    sectorCode: 'SECTOR_E_SOFTWARE',
-    category: 'Software & SaaS',
-    cuelinksCampaignId: 'appsumo'
   },
   // SECTOR_C_HOME_APPLIANCES
   {
@@ -1355,20 +1354,24 @@ export class AutonomousDealDiscoveryEngine {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      const res = await fetchFn(feedUrl, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
+      let res: Response;
+      try {
+        res = await fetchFn(feedUrl, {
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          },
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!res.ok) {
         return [];
       }
 
-      const contentType = (res.headers?.get?.('content-type') || '').toLowerCase();
+      const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
       if (contentType && (contentType.includes('text/html') || contentType.includes('application/xhtml'))) {
         return [];
       }
@@ -7199,7 +7202,7 @@ export class AutonomousDealDiscoveryEngine {
     let trackingUrl: string | undefined = undefined;
     let affiliateVerified = false;
     let affiliateNetwork: 'AMAZON_IN' | 'CUELINKS' | 'DIRECT' = 'DIRECT';
-    let affiliateCampaignId: string | undefined = knownMerchant?.cuelinksCampaignId || (campRow?.campaign_id ? String(campRow.campaign_id) : undefined);
+    let affiliateCampaignId: string | undefined = (campRow?.campaign_id ? String(campRow.campaign_id) : undefined) || knownMerchant?.cuelinksCampaignId;
 
     if (isAmazonHost && amazonTag) {
       const amzUrl = asinMatch?.[1]

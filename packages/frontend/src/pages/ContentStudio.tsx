@@ -62,9 +62,9 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
       const price = Math.round(Number(d.dealPriceINR || d.currentPriceINR || 0));
       const ytLine = d.youtubeReview?.videoUrl ? `\nReview Video: ${d.youtubeReview.videoUrl}` : '';
       const dealKey = d.id || d.slug || idx;
-      const dealSlug = d.slug || d.id || '';
+      const dealSlug = String(d.slug || d.id || '').trim();
       return {
-        id: `deal_ig_${dealKey}`,
+        id: `deal_ig_${dealKey}_${idx}`,
         title: d.title,
         channel: 'INSTAGRAM',
         language: 'English',
@@ -75,9 +75,9 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
       };
     }),
     ...safeComparisons.map((c: any, idx: number) => {
-      const slug = c.comparisonSlug || c.slug || '';
+      const slug = String(c.comparisonSlug || c.slug || '').trim();
       return {
-        id: `cmp_${slug || idx}`,
+        id: `cmp_${slug || idx}_${idx}`,
         title: c.title || (c.dealA?.title && c.dealB?.title ? `${c.dealA.title} vs ${c.dealB.title}` : `${c.productA || ''} vs ${c.productB || ''}`.trim() || slug),
         channel: 'SEO_COMPARISON',
         language: 'English',
@@ -88,9 +88,9 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
       };
     }),
     ...safeBuyerGuides.map((g: any, idx: number) => {
-      const slug = g.intentSlug || g.slug || '';
+      const slug = String(g.intentSlug || g.slug || '').trim();
       return {
-        id: `guide_${slug || idx}`,
+        id: `guide_${slug || idx}_${idx}`,
         title: g.title || g.h1 || slug,
         channel: 'BUYER_GUIDE',
         language: 'English',
