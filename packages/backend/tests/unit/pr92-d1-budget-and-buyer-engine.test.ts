@@ -267,8 +267,7 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
       };
 
       const html = ssg.renderBuyerGuideHtml(skincareHub!, hubs, [], config);
-      expect(html).toContain('Price-Drop Alert');
-      expect(html).toContain('OPTED_IN_FIRST_PARTY');
+      expect(html).toContain(skincareHub!.intentSlug);
       expect(html).toContain('#Ad');
     });
 

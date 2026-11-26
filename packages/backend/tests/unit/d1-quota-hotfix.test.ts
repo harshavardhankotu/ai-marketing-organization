@@ -1168,35 +1168,15 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       );
       await expect(auditService.getAllAuditedDomains()).resolves.toEqual([]);
 
-      // First GET /sitemap.xml sees strict audit read failure -> MUST NOT cache incomplete sitemap
-      const getAllSpy = vi
-        .spyOn(auditService, 'getAllAuditedDomains')
-        .mockRejectedValueOnce(new Error('SIMULATED_SITEMAP_AUDIT_FAILURE'))
-        .mockResolvedValueOnce(['recovered-domain.example']);
-
+      // PR #104: /sitemap.xml excludes legacy /audit/ routes altogether (no audit-domain leak or cache poisoning)
       const res1 = await app.request('/sitemap.xml');
       expect(res1.status).toBe(200);
       const xml1 = await res1.text();
-      expect(xml1).not.toContain('recovered-domain.example');
-      expect(getAllSpy).toHaveBeenCalledWith({ strict: true });
-
-      // Second GET /sitemap.xml must re-query (not serve cached incomplete XML) and include recovered domain
-      const res2 = await app.request('/sitemap.xml');
-      expect(res2.status).toBe(200);
-      const xml2 = await res2.text();
-      expect(xml2).toContain('/audit/recovered-domain.example');
-      expect(getAllSpy).toHaveBeenCalledTimes(2);
-
-      // Third GET /sitemap.xml now hits the healthy cache without calling getAllAuditedDomains again
-      const res3 = await app.request('/sitemap.xml');
-      expect(res3.status).toBe(200);
-      const xml3 = await res3.text();
-      expect(xml3).toContain('/audit/recovered-domain.example');
-      expect(getAllSpy).toHaveBeenCalledTimes(2);
+      expect(xml1).toContain('/deals');
+      expect(xml1).not.toContain('/audit/');
 
       cfgSpy.mockRestore();
       querySpy.mockRestore();
-      getAllSpy.mockRestore();
     });
   });
 

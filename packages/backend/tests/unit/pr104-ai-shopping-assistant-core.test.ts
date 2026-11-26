@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { app, resetSitemapCacheForTesting } from '../../src/index.js';
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
 import { createHighIntentStarterDeals } from '../../src/commission/starter-deals.js';
+import { GeminiProvider } from '../../src/ai/gemini-provider.js';
+import { CuelinksV3Client } from '../../src/commission/cuelinks-v3-client.js';
+import { CuelinksSyncManager } from '../../src/commission/cuelinks-sync-manager.js';
+import { getDb } from '../../src/db/client.js';
 
 describe('PR #104 — AI Shopping Assistant Core', () => {
   const prevBrevo = process.env.BREVO_API_KEY;
@@ -153,5 +157,181 @@ describe('PR #104 — AI Shopping Assistant Core', () => {
     expect(revRes.status).toBe(200);
     const revHtml = await revRes.text();
     expect(revHtml).toContain('noindex');
+  });
+
+  it('uses GEMINI_AI mode when GeminiProvider returns valid grounded output, and falls back honestly to RULE_BASED_FALLBACK with Not listed on merchant page', async () => {
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const starterDeals = createHighIntentStarterDeals();
+    for (const d of starterDeals) {
+      (engine as any).dealsMap.set(d.id, d);
+    }
+
+    const targetDeal = starterDeals[0];
+    const origFragrance = (targetDeal as any).fragranceProfile;
+    (targetDeal as any).fragranceProfile = undefined;
+
+    const keySpy = vi.spyOn(GeminiProvider, 'getCandidateKeys').mockReturnValue(['test_gemini_key']);
+    const spy = vi.spyOn(GeminiProvider.prototype, 'generateStructured').mockResolvedValueOnce({
+      data: {
+        buyerNote: 'Grounded AI comparison note for niacinamide under Rs 800.',
+        cards: [
+          {
+            dealId: targetDeal.id,
+            matchReasoning: 'Fits under Rs 800 niacinamide criteria.',
+            tradeOffs: 'Fragrance status not listed on merchant page.',
+            unverifiedRequirements: ['Fragrance-free status']
+          }
+        ]
+      },
+      model: 'gemini-2.5-flash',
+      latencyMs: 42
+    } as any);
+
+    try {
+      const aiRes = await app.request('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryOrUrl: 'niacinamide serum under 800',
+          preferences: { maxBudgetINR: 800, activeIngredient: 'niacinamide', fragranceFree: true }
+        })
+      });
+      expect(aiRes.status).toBe(200);
+      const aiJson = (await aiRes.json()) as any;
+      expect(aiJson.data.analysisMode).toBe('GEMINI_AI');
+      expect(aiJson.data.analysisLabel).toBe('Gemini AI Analysis');
+      expect(aiJson.data.aiBuyerNote).toBe('Grounded AI comparison note for niacinamide under Rs 800.');
+
+      spy.mockRejectedValueOnce(new Error('GEMINI_DOWN'));
+      const fbRes = await app.request('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryOrUrl: 'niacinamide serum under 800',
+          preferences: { maxBudgetINR: 800, activeIngredient: 'niacinamide', fragranceFree: true }
+        })
+      });
+      expect(fbRes.status).toBe(200);
+      const fbJson = (await fbRes.json()) as any;
+      expect(fbJson.data.analysisMode).toBe('RULE_BASED_FALLBACK');
+      expect(fbJson.data.analysisLabel).toBe('Rule-Based Match (Deterministic Fallback)');
+      const matched = fbJson.data.recommendations.find((r: any) => r.dealId === targetDeal.id);
+      if (matched) {
+        expect(matched.fragranceProfile).toBe('Not listed on merchant page');
+      }
+    } finally {
+      (targetDeal as any).fragranceProfile = origFragrance;
+      spy.mockRestore();
+      keySpy.mockRestore();
+    }
+  });
+
+  it('rejects client affiliate_redirect (403), fails closed with 503 without incrementing on missing partner offer, and records server-side redirect on 302', async () => {
+    const db = getDb();
+    db.prepare(`DELETE FROM durable_events WHERE event_type IN ('shopping_page_view', 'preference_submitted', 'recommendation_shown', 'recommendation_click', 'affiliate_redirect')`).run();
+
+    const forbiddenRes = await app.request('/api/v1/public/shopping-event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'affiliate_redirect', dealId: 'deal_fake' })
+    });
+    expect(forbiddenRes.status).toBe(403);
+    const forbiddenJson = (await forbiddenRes.json()) as any;
+    expect(forbiddenJson.error).toBe('FORBIDDEN_CLIENT_EVENT');
+
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const deal = createHighIntentStarterDeals()[0];
+    const testDealId = deal.id;
+    const prevClKey = process.env.CUELINKS_API_KEY;
+    const prevClChannel = process.env.CUELINKS_CHANNEL_ID;
+    process.env.CUELINKS_API_KEY = 'test_cuelinks_key';
+    process.env.CUELINKS_CHANNEL_ID = '331585';
+    const chanSpy = vi.spyOn(CuelinksSyncManager.prototype, 'getApprovedChannel').mockResolvedValue({
+      approved: true,
+      channel: { id: 331585, name: 'Test Channel', approval_status: 'approved' }
+    } as any);
+    const clSpy = vi.spyOn(CuelinksV3Client.prototype, 'convertLink').mockResolvedValue({
+      affiliated: true,
+      tracking_url: `https://linksredirect.com/?cid=${encodeURIComponent(deal.affiliateCampaignId || '4098')}&url=${encodeURIComponent(deal.productUrl)}`,
+      campaign: { id: deal.affiliateCampaignId || '4098' }
+    } as any);
+    (engine as any).dealsMap.set(testDealId, {
+      ...deal,
+      affiliateNetwork: 'CUELINKS',
+      affiliateCampaignId: deal.affiliateCampaignId || '4098'
+    });
+
+    try {
+      // Missing partner_offers -> 503 and 0 affiliate_redirect rows
+      db.prepare(`DELETE FROM partner_offers WHERE id = ? OR offer_slug = ?`).run(testDealId, testDealId);
+      const failRes = await app.request(`/api/v1/public/deals/${testDealId}/redirect`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0' }
+      });
+      expect(failRes.status).toBe(503);
+      const countAfterFail = db.prepare(`
+        SELECT COUNT(*) AS cnt FROM durable_events
+        WHERE event_type = 'affiliate_redirect'
+      `).get() as any;
+      expect(Number(countAfterFail?.cnt || 0)).toBe(0);
+
+      // Seed authorized partner + active offer -> 302 and increments affiliate_redirect
+      db.prepare(`
+        INSERT OR REPLACE INTO partners (id, organization_id, name, industry, website, network, authorization_status, approval_status, active_status, updated_at)
+        VALUES ('part_cuelinks', 'org_owner_primary', 'Cuelinks', 'E-commerce', 'https://cuelinks.com', 'CUELINKS', 'AUTHORIZED', 'APPROVED', 1, datetime('now'))
+      `).run();
+      db.prepare(`
+        INSERT OR REPLACE INTO partner_offers (id, organization_id, partner_id, offer_slug, title, category, target_customer, destination_url, authorized_tracking_url, active, status, created_at, updated_at)
+        VALUES (?, 'org_owner_primary', 'part_cuelinks', ?, 'Test Serum Offer', 'SKINCARE', 'Skincare shoppers', ?, ?, 1, 'ACTIVE', datetime('now'), datetime('now'))
+      `).run(testDealId, testDealId, deal.productUrl, `https://linksredirect.com/?cid=${deal.affiliateCampaignId || '4098'}`);
+
+      const okRes = await app.request(`/api/v1/public/deals/${testDealId}/redirect?placement=assistant_card`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0' }
+      });
+      expect(okRes.status).toBe(302);
+
+      // Allow microtask queue for void import(...).then(...)
+      await new Promise(r => setTimeout(r, 50));
+      const countAfterOk = db.prepare(`
+        SELECT COUNT(*) AS cnt FROM durable_events
+        WHERE event_type = 'affiliate_redirect'
+      `).get() as any;
+      expect(Number(countAfterOk?.cnt || 0)).toBe(1);
+    } finally {
+      chanSpy.mockRestore();
+      clSpy.mockRestore();
+      if (prevClKey !== undefined) process.env.CUELINKS_API_KEY = prevClKey;
+      else delete process.env.CUELINKS_API_KEY;
+      if (prevClChannel !== undefined) process.env.CUELINKS_CHANNEL_ID = prevClChannel;
+      else delete process.env.CUELINKS_CHANNEL_ID;
+    }
+  });
+
+  it('exposes accurate 24h and 7d shoppingFunnel counts on GET /api/v1/owner/today excluding test and bot rows', async () => {
+    const db = getDb();
+    db.prepare(`DELETE FROM durable_events WHERE event_type IN ('shopping_page_view', 'preference_submitted', 'recommendation_shown', 'recommendation_click', 'affiliate_redirect')`).run();
+
+    const insertEvt = db.prepare(`
+      INSERT INTO durable_events (id, event_type, business_id, organization_id, payload_json, processed, processed_at, created_at)
+      VALUES (?, ?, 'biz_platform_aro', 'org_owner_primary', ?, 1, datetime('now'), ?)
+    `);
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const threeDaysAgoIso = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+    insertEvt.run('sf_human_now', 'preference_submitted', JSON.stringify({ event: 'preference_submitted', trafficClass: 'human' }), nowIso);
+    insertEvt.run('sf_human_3d', 'affiliate_redirect', JSON.stringify({ event: 'affiliate_redirect', trafficClass: 'human' }), threeDaysAgoIso);
+    insertEvt.run('sf_bot_excluded', 'preference_submitted', JSON.stringify({ event: 'preference_submitted', trafficClass: 'known_bot' }), nowIso);
+    insertEvt.run('sf_test_excluded', 'affiliate_redirect', JSON.stringify({ event: 'affiliate_redirect', trafficClass: 'test' }), nowIso);
+
+    const res = await app.request('/api/v1/owner/today', {
+      headers: { 'x-user-id': 'usr_owner_primary' }
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.success).toBe(true);
+    expect(json.data.shoppingFunnel).toBeDefined();
+    expect(json.data.shoppingFunnel.window24h.preference_submitted).toBe(1);
+    expect(json.data.shoppingFunnel.window24h.affiliate_redirect).toBe(0);
+    expect(json.data.shoppingFunnel.window7d.preference_submitted).toBe(1);
+    expect(json.data.shoppingFunnel.window7d.affiliate_redirect).toBe(1);
   });
 });

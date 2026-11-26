@@ -70,3 +70,70 @@ export async function recordShoppingFunnelEvent(input: ShoppingFunnelEventInput)
     return { recorded: false, reason: err?.message || 'DB_UNAVAILABLE' };
   }
 }
+
+export interface ShoppingFunnelCounts {
+  shopping_page_view: number;
+  preference_submitted: number;
+  recommendation_shown: number;
+  recommendation_click: number;
+  affiliate_redirect: number;
+}
+
+export interface ShoppingFunnelSummary {
+  window24h: ShoppingFunnelCounts;
+  window7d: ShoppingFunnelCounts;
+}
+
+const EMPTY_COUNTS = (): ShoppingFunnelCounts => ({
+  shopping_page_view: 0,
+  preference_submitted: 0,
+  recommendation_shown: 0,
+  recommendation_click: 0,
+  affiliate_redirect: 0
+});
+
+/**
+ * Aggregates clean human/browser shopping funnel counts (24h and 7d) from existing `durable_events`
+ * (zero new tables/migrations), excluding bot/test/diagnostic traffic.
+ */
+export async function getShoppingFunnelSummaryAsync(): Promise<ShoppingFunnelSummary> {
+  const window24h = EMPTY_COUNTS();
+  const window7d = EMPTY_COUNTS();
+  const events: ShoppingFunnelEventName[] = [
+    'shopping_page_view',
+    'preference_submitted',
+    'recommendation_shown',
+    'recommendation_click',
+    'affiliate_redirect'
+  ];
+  const placeholders = events.map(() => '?').join(', ');
+  const sql = `
+    SELECT
+      event_type,
+      SUM(CASE WHEN created_at >= datetime('now', '-24 hours') THEN 1 ELSE 0 END) AS cnt_24h,
+      COUNT(*) AS cnt_7d
+    FROM durable_events
+    WHERE event_type IN (${placeholders})
+      AND created_at >= datetime('now', '-7 days')
+      AND COALESCE(payload_json, '') NOT LIKE '%"trafficClass":"test"%'
+      AND COALESCE(payload_json, '') NOT LIKE '%"trafficClass":"diagnostic"%'
+      AND COALESCE(payload_json, '') NOT LIKE '%"trafficClass":"internal"%'
+      AND COALESCE(payload_json, '') NOT LIKE '%"trafficClass":"known_bot"%'
+      AND COALESCE(payload_json, '') NOT LIKE '%"trafficClass":"suspected_bot"%'
+    GROUP BY event_type
+  `;
+  try {
+    const d1Repo = D1RevenueRepository.getInstance();
+    const rows = d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)
+      ? await d1Repo.query<any>('durable_events', sql, events)
+      : (getDb().prepare(sql).all(...events) as any[]);
+    for (const row of rows || []) {
+      const ev = String(row?.event_type || '') as ShoppingFunnelEventName;
+      if (ev in window24h) {
+        window24h[ev] = Number(row?.cnt_24h || 0);
+        window7d[ev] = Number(row?.cnt_7d || 0);
+      }
+    }
+  } catch {}
+  return { window24h, window7d };
+}

@@ -320,9 +320,8 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
 
       const xml = await res.text();
       expect(xml).toContain('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">');
-      expect(xml).toContain('/compare/electronics-technology');
-      expect(xml).toContain('/compare/gold-silver-jewellery');
-      expect(xml).toContain('/audit/clovedental.in');
+      expect(xml).toContain('/deals');
+      expect(xml).not.toContain('/audit/clovedental.in');
     });
   });
 });

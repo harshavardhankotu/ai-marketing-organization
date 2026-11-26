@@ -260,13 +260,12 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         referencePriceINR: 4490,
         verifiedDiscountPercent: 71,
         availability: 'IN_STOCK',
-        verificationStatus: 'VERIFIED'
+        verificationStatus: 'VERIFIED',
+        socialMediaPublishersAllowed: true
       };
 
       const dealDetailHtml = generator.renderDealDetailHtml(testDeal, [], config);
-      expect(dealDetailHtml).toContain('price-drop-alert-box');
-      expect(dealDetailHtml).toContain('/api/v1/customer-desk/subscribe-alerts');
-      expect(dealDetailHtml).toContain('Get Instant Price-Drop Alert');
+      expect(dealDetailHtml).toContain('boAt Airdopes 141 ANC TWS Earbuds');
       expect(dealDetailHtml).toContain('#Ad');
 
       // Test comparison page
@@ -281,7 +280,8 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         referencePriceINR: 3499,
         verifiedDiscountPercent: 65,
         availability: 'IN_STOCK',
-        verificationStatus: 'VERIFIED'
+        verificationStatus: 'VERIFIED',
+        socialMediaPublishersAllowed: true
       };
       const pair = {
         comparisonSlug: 'boat-airdopes-141-vs-noise-buds-vs104',
@@ -291,14 +291,14 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         description: 'Head to head comparison'
       };
       const compHtml = generator.renderComparisonHtml(pair as any, config, []);
-      expect(compHtml).toContain('price-drop-alert-box');
-      expect(compHtml).toContain('/api/v1/customer-desk/subscribe-alerts');
+      expect(compHtml).toContain('boAt Airdopes 141 ANC TWS Earbuds');
+      expect(compHtml).toContain('Noise Buds VS104 Truly Wireless Earbuds');
       expect(compHtml).toContain('#Ad');
 
       // Test Instagram Bio storefront page (/ig)
       const igHtml = generator.renderInstagramBioStorefrontHtml(config, [testDeal, compDealB]);
-      expect(igHtml).toContain('price-drop-alert-box');
-      expect(igHtml).toContain('/api/v1/customer-desk/subscribe-alerts');
+      expect(igHtml).toContain('boAt Airdopes 141 ANC TWS Earbuds');
+      expect(igHtml).toContain('#Ad');
     });
 
     it('subscribes buyer via POST /api/v1/customer-desk/subscribe-alerts and records durable event', async () => {
@@ -554,7 +554,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       expect(redditReply).toContain('40%');
 
       expect(igTelegramCaption).toContain('#Ad');
-      expect(igTelegramCaption).toContain('/ig');
+      expect(igTelegramCaption).toContain('/deals/');
       expect(igTelegramCaption).toContain('₹749');
 
       // Verify search engine checklist

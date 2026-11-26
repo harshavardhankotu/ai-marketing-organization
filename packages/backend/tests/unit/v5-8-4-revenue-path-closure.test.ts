@@ -296,8 +296,8 @@ describe('V5.8.4 — Revenue Path Closure, Razorpay Webhook Hardening & Truthful
         googleSiteVerification: 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I'
       });
 
-      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
-      expect(html).toContain('Founding Pilot');
+      expect(html).toContain('AI Buying Assistant');
+      expect(html).toContain('#Affiliate');
       expect(html).toContain('content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I"');
       expect(html).toContain('content="VERIFY-CL-YE94W8YS"');
 

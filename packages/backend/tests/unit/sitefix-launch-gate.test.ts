@@ -392,8 +392,8 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       const homeRes = await app.request('/');
       expect(homeRes.status).toBe(200);
       const html = await homeRes.text();
-      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
-      expect(html).toContain('href="/demo"');
+      expect(html).toContain('AI Buying Assistant');
+      expect(html).toContain('href="/deals"');
       expect(html).not.toMatch(/Apex Dental|chipped tooth|8 PM to 8 AM Inquiry Gap|dental clinic/i);
 
       const catalog = OfferCatalogService.getInstance();

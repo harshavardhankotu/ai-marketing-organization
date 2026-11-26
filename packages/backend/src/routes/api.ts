@@ -6571,12 +6571,15 @@ apiRouter.get('/owner/today', async (c) => {
 
   const { GeminiProvider } = await import('../ai/gemini-provider.js');
   const geminiHealth = GeminiProvider.getHealthStatus();
+  const { getShoppingFunnelSummaryAsync } = await import('../commission/shopping-funnel-tracker.js');
+  const shoppingFunnel = await getShoppingFunnelSummaryAsync().catch(() => null);
 
   return c.json({
     success: true,
     data: {
       ...digest,
       geminiHealth,
+      shoppingFunnel,
       freezeMessage: 'Feature development is frozen. System is in stabilization and owner-action phase.'
     },
     freezeNotice: 'Feature development is frozen. System is in stabilization and owner-action phase.'
@@ -16885,6 +16888,9 @@ apiRouter.post('/public/shopping-event', async (c) => {
   const clientIp = getTrustedClientIp(c).ip;
   const body = await c.req.json().catch(() => ({}));
   const event = body?.event;
+  if (event === 'affiliate_redirect') {
+    return c.json({ success: false, error: 'FORBIDDEN_CLIENT_EVENT' }, 403);
+  }
   if (event !== 'recommendation_click' && event !== 'shopping_page_view') {
     return c.json({ success: false, error: 'INVALID_EVENT' }, 400);
   }

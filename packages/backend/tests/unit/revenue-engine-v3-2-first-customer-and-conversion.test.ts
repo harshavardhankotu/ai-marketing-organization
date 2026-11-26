@@ -183,15 +183,14 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
   });
 
   describe('3. Public Storefront & Offer Page (GET / and GET /offer)', () => {
-    it('serves focused Website Enquiry Path Repair storefront on GET / with /demo and legal links', async () => {
+    it('serves focused AI Buying Assistant storefront on GET / with /deals and legal links', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
-      expect(html).toContain('Founding Pilot');
-      expect(html).toContain('href="/demo"');
-      expect(html).toContain('href="/offer"');
+      expect(html).toContain('AI Buying Assistant');
+      expect(html).toContain('#Affiliate');
+      expect(html).toContain('href="/deals"');
       expect(html).toContain('href="/terms"');
       expect(html).toContain('href="/privacy"');
       expect(html).toContain('href="/refund"');
@@ -213,7 +212,7 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('Configuration Pending Owner Attestation');
-      expect(html).toContain('index, follow');
+      expect(html).toContain('noindex');
       expect(html).toContain('Pilot Scope &amp; Verification Policy');
       expect(html).toContain('href="/demo"');
       expect(html).not.toContain('₹15,000');

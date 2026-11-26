@@ -1524,9 +1524,14 @@ export class StaticSiteGenerator {
               '<button type="submit" style="background:#10b981;color:#020617;border:none;padding:0.45rem 0.85rem;border-radius:6px;font-weight:700;font-size:0.8rem;cursor:pointer;">Set Price Alert</button>' +
             '</form><div id="fp-alert-status-ssr" style="font-size:0.8rem;margin-top:0.4rem;"></div>'
           : '<div style="margin-top:0.65rem;font-size:0.76rem;color:#64748b;">Email price-drop alerts are currently paused while alert delivery is being configured.</div>';
+        var modeLabel = d.analysisLabel ? String(d.analysisLabel) : (d.analysisMode === 'GEMINI_AI' ? 'Gemini AI Analysis' : 'Rule-Based Match (Deterministic Fallback)');
+        var modeColor = d.analysisMode === 'GEMINI_AI' ? '#38bdf8' : '#94a3b8';
         out.innerHTML =
           '<div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:1rem;">' +
-            '<div style="font-size:0.75rem;font-weight:700;color:' + vColor + ';margin-bottom:0.3rem;">' + escFp(d.verdict) + '</div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.35rem;">' +
+              '<div style="font-size:0.75rem;font-weight:700;color:' + vColor + ';">' + escFp(d.verdict) + '</div>' +
+              '<span style="font-size:0.68rem;font-weight:600;color:' + modeColor + ';border:1px solid #1e293b;border-radius:999px;padding:0.15rem 0.55rem;">' + escFp(modeLabel) + '</span>' +
+            '</div>' +
             '<div style="font-size:0.9rem;color:#e2e8f0;margin-bottom:0.45rem;">' + escFp(d.verdictSummary) + '</div>' +
             (d.aiBuyerNote ? '<div style="font-size:0.82rem;color:#38bdf8;margin-bottom:0.5rem;"><strong>Assistant Note:</strong> ' + escFp(d.aiBuyerNote) + '</div>' : '') +
             recHtml +

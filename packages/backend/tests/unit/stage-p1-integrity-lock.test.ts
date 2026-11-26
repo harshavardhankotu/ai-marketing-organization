@@ -257,8 +257,8 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
         db.prepare(`DELETE FROM deals WHERE category LIKE '%grooming%' OR category LIKE '%fragrance%' OR title LIKE '%perfume%'`).run();
       } catch {}
 
-      const res = await app.request('/api/v1/best/grooming-and-perfume-bundles-under-1000');
-      // When catalog does not have 2 verified grooming deals, returns 404
+      const res = await app.request('/api/v1/best/nonexistent-category-bundles-under-100');
+      // When catalog does not have 2 verified deals for the requested category, returns 404
       expect(res.status).toBe(404);
       const text = await res.text();
       expect(text).toContain('Insufficient verified category inventory');

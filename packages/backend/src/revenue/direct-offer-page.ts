@@ -694,9 +694,14 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
             '</div>' +
           '</article>';
         }).join('');
+        var modeLabel = d.analysisLabel ? String(d.analysisLabel) : (d.analysisMode === 'GEMINI_AI' ? 'Gemini AI Analysis' : 'Rule-Based Match (Deterministic Fallback)');
+        var modeColor = d.analysisMode === 'GEMINI_AI' ? '#38bdf8' : '#94a3b8';
         out.innerHTML =
           '<div style="background:#090d16;border:1px solid #1e293b;border-radius:12px;padding:1rem;">' +
-            '<div style="font-size:0.84rem;color:#cbd5e1;margin-bottom:0.4rem;">' + escHtml(d.verdictSummary) + '</div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.4rem;">' +
+              '<div style="font-size:0.84rem;color:#cbd5e1;">' + escHtml(d.verdictSummary) + '</div>' +
+              '<span style="font-size:0.7rem;font-weight:600;color:' + modeColor + ';border:1px solid #1e293b;border-radius:999px;padding:0.15rem 0.6rem;">' + escHtml(modeLabel) + '</span>' +
+            '</div>' +
             (d.aiBuyerNote ? '<div style="font-size:0.86rem;color:#38bdf8;margin-bottom:0.85rem;"><strong>Assistant Note:</strong> ' + escHtml(d.aiBuyerNote) + '</div>' : '') +
             (recs.length > 0 ? '<div class="grid-2">' + cardsHtml + '</div>' : '<div style="font-size:0.86rem;color:#94a3b8;">No matching verified products found for those exact filters. Try broadening your budget or ingredient query.</div>') +
           '</div>';

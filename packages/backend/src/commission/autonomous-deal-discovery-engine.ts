@@ -295,6 +295,8 @@ export interface FairPriceCheckResult {
   priceHistory: Array<{ priceINR: number; observedAt: string }>;
   suggestions: string[];
   aiBuyerNote: string | null;
+  analysisMode: 'GEMINI_AI' | 'RULE_BASED_FALLBACK';
+  analysisLabel: string;
   priceAlertsAvailable: boolean;
   telegramAlertsAvailable: boolean;
   priceDropAlertRegistered: {
@@ -9007,17 +9009,21 @@ export class AutonomousDealDiscoveryEngine {
       const opt = optionByDealId.get(deal.id);
       const specs = (deal.evidenceJson?.rawSpecs || {}) as Record<string, string>;
       const unitVolumeMl = Number(deal.unitVolumeMl ?? deal.evidenceJson?.unitVolumeMl ?? 0) || null;
-      const pricePerMlINR = Number(deal.pricePerMlINR ?? deal.evidenceJson?.pricePerMlINR ?? 0) || (unitVolumeMl ? Number((Number(deal.currentPriceINR || 0) / unitVolumeMl).toFixed(2)) : null);
+      const currentPrice = Number(deal.currentPriceINR || 0);
+      const pricePerMlINR = (currentPrice > 0 && unitVolumeMl && unitVolumeMl > 0)
+        ? (Number(deal.pricePerMlINR ?? deal.evidenceJson?.pricePerMlINR ?? 0) || Number((currentPrice / unitVolumeMl).toFixed(2)))
+        : null;
       const keyIngredients = specs['Key Ingredients'] || null;
-      const fragranceProfile = specs['Fragrance Profile'] || null;
+      const rawFragranceProfile = specs['Fragrance Profile'] || null;
+      const fragranceProfile = rawFragranceProfile || 'Not listed on merchant page';
       const texture = specs['Texture & Finish'] || null;
       const hay = `${deal.title} ${deal.targetBuyerSegment || ''} ${deal.buyerFitSummary || ''} ${Object.values(specs).join(' ')}`.toLowerCase();
 
       const unverifiedRequirements: string[] = [];
       if (wantsFragranceFree) {
-        const fpLower = String(fragranceProfile || '').toLowerCase();
-        if (!fpLower || fpLower.includes('no fragrance note')) {
-          unverifiedRequirements.push(`Fragrance-free status cannot be fully verified from merchant listing ("${fragranceProfile || 'Not stated'}").`);
+        const fpLower = String(rawFragranceProfile || '').toLowerCase();
+        if (!fpLower || fpLower.includes('no fragrance note') || fpLower.includes('not listed')) {
+          unverifiedRequirements.push(`Fragrance-free status: ${rawFragranceProfile ? rawFragranceProfile : 'Not listed on merchant page'}.`);
         }
       }
       if (skinTypePref && !hay.includes(skinTypePref)) {
@@ -9124,6 +9130,9 @@ export class AutonomousDealDiscoveryEngine {
 
     // Grounded Gemini Flash trade-off reasoning (runs regardless of price-history count whenever key exists)
     let aiBuyerNote: string | null = null;
+    let analysisMode: 'GEMINI_AI' | 'RULE_BASED_FALLBACK' = 'RULE_BASED_FALLBACK';
+    let analysisLabel = 'Rule-Based Match (Deterministic Fallback)';
+    const candidateDealIds = new Set(fitRankedDeals.map(x => x.deal.id));
     const { GeminiProvider } = await import('../ai/gemini-provider.js');
     if (!input.skipAiSynthesis && GeminiProvider.getCandidateKeys().length > 0 && recommendations.length > 0) {
       try {
@@ -9140,7 +9149,7 @@ export class AutonomousDealDiscoveryEngine {
           }>({
             agentId: 'fair_price_buyer_analyst',
             systemInstruction:
-              'You are an honest Indian consumer shopping assistant. Based STRICTLY on the verified product JSON rows and shopper preferences, return JSON with a concise 1-2 sentence buyerNote and per-card matchReasoning, tradeOffs, and unverifiedRequirements. NEVER invent specs, personal-use reviews, medical cure claims, or prices. If a shopper requirement is not explicitly confirmed in the listing, state it in unverifiedRequirements.',
+              'You are an honest Indian consumer shopping assistant. Based STRICTLY on the verified product JSON rows, YouTube review links, and shopper preferences, return JSON with a concise 1-2 sentence buyerNote and per-card matchReasoning, tradeOffs, and unverifiedRequirements. NEVER invent specs, personal-use reviews, medical cure claims, or prices. If a shopper requirement is not explicitly confirmed in the listing, state it in unverifiedRequirements.',
             prompt: 'Return JSON { "buyerNote": "...", "cards": [{ "dealId": "...", "matchReasoning": "...", "tradeOffs": "...", "unverifiedRequirements": ["..."] }] }.',
             context: {
               queryOrUrl,
@@ -9162,7 +9171,8 @@ export class AutonomousDealDiscoveryEngine {
                 pricePerMlINR: r.pricePerMlINR,
                 keyIngredients: r.keyIngredients,
                 fragranceProfile: r.fragranceProfile,
-                defaultTradeOff: r.tradeOffs
+                defaultTradeOff: r.tradeOffs,
+                youtubeReviews: r.youtubeReviews.map(v => ({ title: v.title, videoUrl: v.videoUrl }))
               }))
             },
             thinkingLevel: 'low',
@@ -9172,24 +9182,33 @@ export class AutonomousDealDiscoveryEngine {
         ]);
         if (aiRes && (aiRes as any).data) {
           const parsed = (aiRes as any).data;
+          let appliedGemini = false;
           if (typeof parsed.buyerNote === 'string' && parsed.buyerNote.trim()) {
             aiBuyerNote = parsed.buyerNote.trim();
+            appliedGemini = true;
           }
           if (Array.isArray(parsed.cards)) {
             for (const aiCard of parsed.cards) {
+              if (!aiCard?.dealId || !candidateDealIds.has(aiCard.dealId)) continue;
               const target = recommendations.find(r => r.dealId === aiCard.dealId);
               if (!target) continue;
               if (typeof aiCard.matchReasoning === 'string' && aiCard.matchReasoning.trim()) {
                 target.matchReasoning = aiCard.matchReasoning.trim();
+                appliedGemini = true;
               }
               if (typeof aiCard.tradeOffs === 'string' && aiCard.tradeOffs.trim()) {
                 target.tradeOffs = aiCard.tradeOffs.trim();
+                appliedGemini = true;
               }
               if (Array.isArray(aiCard.unverifiedRequirements)) {
                 const cleaned = aiCard.unverifiedRequirements.map((s: any) => String(s || '').trim()).filter(Boolean);
                 if (cleaned.length > 0) target.unverifiedRequirements = cleaned;
               }
             }
+          }
+          if (appliedGemini) {
+            analysisMode = 'GEMINI_AI';
+            analysisLabel = 'Gemini AI Analysis';
           }
         }
       } catch {}
@@ -9254,6 +9273,8 @@ export class AutonomousDealDiscoveryEngine {
       priceHistory: mergedHistory.slice(-15),
       suggestions,
       aiBuyerNote,
+      analysisMode,
+      analysisLabel,
       priceAlertsAvailable,
       telegramAlertsAvailable,
       priceDropAlertRegistered
