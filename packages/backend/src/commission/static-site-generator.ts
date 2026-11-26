@@ -951,7 +951,7 @@ export class StaticSiteGenerator {
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
-      <a href="/revenue">Revenue Funnel</a>
+      <a href="/disclosure">Disclosure</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -1075,7 +1075,7 @@ export class StaticSiteGenerator {
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
-      <a href="/revenue">Revenue Funnel</a>
+      <a href="/disclosure">Disclosure</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -1360,9 +1360,9 @@ export class StaticSiteGenerator {
   <header>
     <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
     <nav>
+      <a href="/">AI Assistant</a>
       <a href="/deals" class="active">Verified Deals</a>
-      <a href="/">Guides</a>
-      <a href="/about">About</a>
+      <a href="/disclosure">Disclosure</a>
       <a href="/contact">Contact</a>
     </nav>
   </header>
@@ -1374,15 +1374,28 @@ export class StaticSiteGenerator {
     </div>
     <section id="fair-price-checker-ssr" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 2rem;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
-        <h2 style="margin: 0; font-size: 1.1rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Price-Drop Alert</h2>
-        <span style="font-size: 0.78rem; color: #94a3b8;">Observed MRP &bull; Unit Cost (₹/ml) &bull; Official Brand Stores</span>
+        <h2 style="margin: 0; font-size: 1.1rem; color: #f8fafc;">AI Buying Assistant &amp; Fair-Price Checker</h2>
+        <span style="font-size: 0.78rem; color: #94a3b8;">#Affiliate &bull; Unit Cost (₹/ml) &bull; Official Brand Stores</span>
       </div>
       <p style="margin: 0 0 0.9rem 0; font-size: 0.88rem; color: #94a3b8;">
-        Paste any Indian product URL (marketplace or D2C flagship store) or search any product to check fair market price, stacked coupon savings, and set a target price-drop alert.
+        Describe what you need (e.g. &ldquo;niacinamide serum under 800, oily skin, avoid fragrance&rdquo;) or paste a merchant URL to see Best Match, Best Value (₹/ml), and honest trade-offs.
       </p>
-      <form onsubmit="handleFairPriceDealsSsr(event)" style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
-        <input type="text" id="fp-query-deals-ssr" required placeholder="Paste product URL or type e.g. best ANC earbuds under 2000" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
-        <button type="submit" id="fp-btn-deals-ssr" style="background: #06b6d4; color: #020617; font-weight: 700; border: none; border-radius: 8px; padding: 0.7rem 1.25rem; cursor: pointer; font-size: 0.88rem;">Check Fair Price</button>
+      <form onsubmit="handleFairPriceDealsSsr(event)" style="display: grid; gap: 0.65rem;">
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <input type="text" id="fp-query-deals-ssr" required placeholder="e.g. niacinamide serum under 800, oily skin, avoid fragrance" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
+          <input type="number" id="fp-budget-deals-ssr" min="100" max="50000" placeholder="Max ₹" style="width: 110px; padding: 0.7rem 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
+          <button type="submit" id="fp-btn-deals-ssr" style="background: #06b6d4; color: #020617; font-weight: 700; border: none; border-radius: 8px; padding: 0.7rem 1.25rem; cursor: pointer; font-size: 0.88rem;">Match Products</button>
+        </div>
+        <div style="display: flex; gap: 0.85rem; flex-wrap: wrap; align-items: center; font-size: 0.8rem; color: #cbd5e1;">
+          <select id="fp-skin-deals-ssr" style="background: #090d16; border: 1px solid #334155; border-radius: 6px; padding: 0.4rem 0.65rem; color: #fff; font-size: 0.8rem;">
+            <option value="">Any skin type</option>
+            <option value="oily">Oily / Combination</option>
+            <option value="dry">Dry / Dull</option>
+            <option value="sensitive">Sensitive</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="fp-frag-deals-ssr"> Avoid fragrance</label>
+          <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="fp-ml-deals-ssr"> Lowest ₹/ml</label>
+        </div>
       </form>
       <div id="fp-result-deals-ssr" style="display: none; margin-top: 1rem;"></div>
     </section>
@@ -1421,14 +1434,13 @@ export class StaticSiteGenerator {
   </main>
   <footer>
     <nav>
+      <a href="/">AI Assistant</a>
       <a href="/deals">Verified Deals</a>
-      <a href="/revenue">Revenue Funnel</a>
-      <a href="/about">About</a>
+      <a href="/disclosure">Affiliate Disclosure</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
       <a href="/terms">Terms of Service</a>
       <a href="/refund">7-Day Refund Policy</a>
-      <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
@@ -1436,59 +1448,95 @@ export class StaticSiteGenerator {
     function escFp(s) {
       return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
+    function trackDealsRecClick(dealId, slot) {
+      try {
+        var payload = JSON.stringify({ event: 'recommendation_click', path: '/deals', dealId: dealId, slot: slot });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/v1/public/shopping-event', new Blob([payload], { type: 'application/json' }));
+        } else {
+          fetch('/api/v1/public/shopping-event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(function(){});
+        }
+      } catch (e) {}
+    }
     async function handleFairPriceDealsSsr(e) {
       e.preventDefault();
       var qEl = document.getElementById('fp-query-deals-ssr');
+      var budgetEl = document.getElementById('fp-budget-deals-ssr');
+      var skinEl = document.getElementById('fp-skin-deals-ssr');
+      var fragEl = document.getElementById('fp-frag-deals-ssr');
+      var mlEl = document.getElementById('fp-ml-deals-ssr');
       var btn = document.getElementById('fp-btn-deals-ssr');
       var out = document.getElementById('fp-result-deals-ssr');
       if (!qEl || !out) return;
       var q = qEl.value.trim();
       if (!q) return;
       btn.disabled = true;
-      btn.innerText = 'Checking...';
+      btn.innerText = 'Matching...';
       out.style.display = 'block';
-      out.innerHTML = '<div style="font-size:0.85rem;color:#94a3b8;">Checking observed Indian market prices and active coupons...</div>';
+      out.innerHTML = '<div style="font-size:0.85rem;color:#94a3b8;">Matching verified products and calculating ₹/ml trade-offs...</div>';
       try {
+        var budgetVal = Number((budgetEl || {}).value || 0);
         var res = await fetch('/api/v1/public/fair-price-check', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ queryOrUrl: q })
+          body: JSON.stringify({
+            queryOrUrl: q,
+            preferences: {
+              maxBudgetINR: budgetVal > 0 ? budgetVal : undefined,
+              skinType: (skinEl && skinEl.value) ? skinEl.value : undefined,
+              fragranceFree: Boolean(fragEl && fragEl.checked),
+              prioritizeLowestPricePerMl: Boolean(mlEl && mlEl.checked)
+            }
+          })
         });
         var json = await res.json();
         if (!res.ok || !json.success) throw new Error(json.message || json.error || 'Check failed');
         var d = json.data;
         var vColor = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE' ? '#34d399' : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP' ? '#f59e0b' : '#38bdf8');
-        var rowsHtml = (d.crossStoreOptions || []).slice(0, 6).map(function(o) {
-          var isAmz = Boolean(o.isMarketplaceRail || o.isSearchRail) || (o.affiliateNetwork && o.affiliateNetwork.toLowerCase() === 'amazon_in') || Number(o.effectivePriceINR || 0) <= 0;
-          var priceTxt = isAmz ? 'Live Marketplace Price' : ('₹' + Number(o.effectivePriceINR || o.currentPriceINR || 0).toLocaleString('en-IN'));
-          var btnTxt = o.ctaLabel || (isAmz ? "Check Today's Live Marketplace Price & Coupons →" : 'Buy (#Ad) →');
-          return '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.55rem 0;border-top:1px solid #1e293b;font-size:0.84rem;">' +
-            '<div><div style="color:#fff;font-weight:600;">' + escFp(o.title) + (o.isLowestPrice ? ' <span style="color:#34d399;">(Lowest Net)</span>' : '') + '</div>' +
-            '<div style="color:#94a3b8;font-size:0.76rem;">' + escFp(o.merchant) + (o.couponCode ? ' · Code: ' + escFp(o.couponCode) : '') + ' · ' + escFp(o.disclosure || '#Ad') + '</div></div>' +
-            '<div style="display:flex;align-items:center;gap:0.65rem;flex-shrink:0;">' +
-              '<span style="font-weight:700;color:#fff;font-variant-numeric:tabular-nums;">' + escFp(priceTxt) + '</span>' +
-              '<a href="' + escFp(o.trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" style="background:' + (isAmz ? '#f59e0b' : '#06b6d4') + ';color:#020617;padding:0.35rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.76rem;text-decoration:none;">' + escFp(btnTxt) + '</a>' +
-            '</div></div>';
-        }).join('');
-        out.innerHTML =
-          '<div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:1rem;">' +
-            '<div style="font-size:0.75rem;font-weight:700;color:' + vColor + ';margin-bottom:0.3rem;">' + escFp(d.verdict) + '</div>' +
-            '<div style="font-size:0.9rem;color:#e2e8f0;margin-bottom:0.45rem;">' + escFp(d.verdictSummary) + '</div>' +
-            (d.aiBuyerNote ? '<div style="font-size:0.82rem;color:#94a3b8;margin-bottom:0.5rem;">Note: ' + escFp(d.aiBuyerNote) + '</div>' : '') +
-            rowsHtml +
-            '<form onsubmit="handleFairPriceAlertSsr(event)" style="margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #1e293b;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">' +
+        var recs = Array.isArray(d.recommendations) ? d.recommendations : [];
+        var recHtml = recs.length > 0 ? ('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0.75rem;margin:0.75rem 0;">' + recs.map(function(r) {
+          var yt = (r.youtubeReviews && r.youtubeReviews.length > 0)
+            ? '<div style="font-size:0.74rem;color:#38bdf8;margin-top:0.35rem;">Creator review: ' + r.youtubeReviews.map(function(v) { return '<a href="' + escFp(v.videoUrl) + '" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;">' + escFp(v.title) + '</a>'; }).join(', ') + '</div>'
+            : '';
+          var unv = (r.unverifiedRequirements && r.unverifiedRequirements.length > 0)
+            ? '<div style="font-size:0.74rem;color:#fbbf24;margin-top:0.3rem;">Note: ' + escFp(r.unverifiedRequirements.join(' ')) + '</div>'
+            : '';
+          return '<div style="background:#111827;border:1px solid #1e293b;border-radius:8px;padding:0.85rem;display:flex;flex-direction:column;justify-content:space-between;gap:0.5rem;">' +
+            '<div>' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.35rem;margin-bottom:0.35rem;">' +
+                '<span style="font-size:0.72rem;font-weight:700;color:#34d399;">' + escFp(r.slotLabel) + '</span>' +
+                '<span style="font-size:0.7rem;color:#94a3b8;">#Affiliate</span>' +
+              '</div>' +
+              '<div style="font-size:0.9rem;font-weight:700;color:#fff;margin-bottom:0.25rem;">' + escFp(r.title) + '</div>' +
+              '<div style="font-size:0.85rem;font-weight:700;color:#67e8f9;margin-bottom:0.35rem;">₹' + Number(r.effectivePriceINR || r.currentPriceINR || 0).toLocaleString('en-IN') + (r.pricePerMlINR ? ' · ₹' + Number(r.pricePerMlINR).toFixed(2) + '/ml' : '') + '</div>' +
+              '<div style="font-size:0.78rem;color:#e2e8f0;margin-bottom:0.25rem;"><strong>Fit:</strong> ' + escFp(r.matchReasoning) + '</div>' +
+              '<div style="font-size:0.76rem;color:#94a3b8;"><strong>Trade-off:</strong> ' + escFp(r.tradeOffs) + '</div>' +
+              unv + yt +
+            '</div>' +
+            '<a href="' + escFp(r.trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" data-deal-id="' + escFp(r.dealId) + '" data-slot="' + escFp(r.slot) + '" onclick="trackDealsRecClick(this.dataset.dealId,this.dataset.slot)" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;padding:0.42rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.78rem;text-decoration:none;">' + escFp(r.ctaLabel) + '</a>' +
+          '</div>';
+        }).join('') + '</div>') : '';
+        var alertFormHtml = d.priceAlertsAvailable
+          ? '<form onsubmit="handleFairPriceAlertSsr(event)" style="margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #1e293b;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">' +
               '<input type="number" id="fp-alert-price-ssr" min="1" required placeholder="Target ₹" value="' + (d.estimatedFairPriceINR ? Math.round(d.estimatedFairPriceINR * 0.9) : '') + '" style="width:110px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.82rem;">' +
               '<input type="email" id="fp-alert-email-ssr" required placeholder="Email for target price drop alert" style="flex:1 1 200px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.82rem;">' +
               '<label style="font-size:0.75rem;color:#cbd5e1;display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="fp-alert-consent-ssr" required> Opt-in alerts (DPDP)</label>' +
               '<button type="submit" style="background:#10b981;color:#020617;border:none;padding:0.45rem 0.85rem;border-radius:6px;font-weight:700;font-size:0.8rem;cursor:pointer;">Set Price Alert</button>' +
-            '</form>' +
-            '<div id="fp-alert-status-ssr" style="font-size:0.8rem;margin-top:0.4rem;"></div>' +
+            '</form><div id="fp-alert-status-ssr" style="font-size:0.8rem;margin-top:0.4rem;"></div>'
+          : '<div style="margin-top:0.65rem;font-size:0.76rem;color:#64748b;">Email price-drop alerts are currently paused while alert delivery is being configured.</div>';
+        out.innerHTML =
+          '<div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:1rem;">' +
+            '<div style="font-size:0.75rem;font-weight:700;color:' + vColor + ';margin-bottom:0.3rem;">' + escFp(d.verdict) + '</div>' +
+            '<div style="font-size:0.9rem;color:#e2e8f0;margin-bottom:0.45rem;">' + escFp(d.verdictSummary) + '</div>' +
+            (d.aiBuyerNote ? '<div style="font-size:0.82rem;color:#38bdf8;margin-bottom:0.5rem;"><strong>Assistant Note:</strong> ' + escFp(d.aiBuyerNote) + '</div>' : '') +
+            recHtml +
+            alertFormHtml +
           '</div>';
       } catch (err) {
         out.innerHTML = '<div style="font-size:0.84rem;color:#f87171;">Error: ' + escFp(err.message || 'Check failed') + '</div>';
       } finally {
         btn.disabled = false;
-        btn.innerText = 'Check Fair Price';
+        btn.innerText = 'Match Products';
       }
     }
     async function handleFairPriceAlertSsr(e) {
@@ -1542,6 +1590,13 @@ export class StaticSiteGenerator {
     const dealId = this.escapeHtml(options.dealId || '');
     const price = options.currentPriceINR ? Math.round(options.currentPriceINR) : 0;
     const defaultTargetPrice = price > 0 ? Math.round(price * 0.9) : '';
+    const brevoConfigured = Boolean((process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim());
+    if (!brevoConfigured) {
+      return `
+    <div class="price-drop-alert-box" style="margin-top:1.25rem;padding:0.85rem 1.15rem;background:rgba(15,23,42,0.8);border:1px solid #1e293b;border-radius:10px;font-size:0.82rem;color:#94a3b8;">
+      Email price-drop alerts are currently paused while alert delivery is being configured.
+    </div>`;
+    }
 
     return `
     <div class="price-drop-alert-box" style="margin-top:1.25rem;padding:1rem 1.25rem;background:rgba(15,23,42,0.8);border:1px solid #1e293b;border-radius:10px;">
@@ -2539,7 +2594,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
-      <a href="/revenue">Revenue Funnel</a>
+      <a href="/disclosure">Disclosure</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -3300,7 +3355,7 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
         d &&
         d.affiliateNetwork !== 'AMAZON_IN' &&
         !/^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || '')) &&
-        d.socialMediaPublishersAllowed !== false &&
+        d.socialMediaPublishersAllowed === true &&
         d.evidence?.socialMediaPublishersAllowed !== false &&
         d.evidenceJson?.socialMediaPublishersAllowed !== false &&
         Number(d.currentPriceINR || 0) > 0 &&

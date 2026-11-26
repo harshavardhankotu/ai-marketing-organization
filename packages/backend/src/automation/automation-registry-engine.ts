@@ -2220,7 +2220,7 @@ export class AutomationRegistryEngine {
             const topUnpostedIg = (eligible.deals || []).find((d: any) =>
               d &&
               d.productVerified === true &&
-              d.socialMediaPublishersAllowed !== false &&
+              d.socialMediaPublishersAllowed === true &&
               d.imageUrl &&
               Number(d.currentPriceINR || 0) > 0
             );

@@ -212,6 +212,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/buyer-guides',
     '/public/amazon-redirect',
     '/public/fair-price-check',
+    '/public/shopping-event',
     '/public/autonomy-status',
     '/public/mcp',
     '/public/scan',
@@ -10700,6 +10701,23 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       placement: sanitizedPlacement,
       source: 'deals_page'
     });
+    void import('../commission/shopping-funnel-tracker.js').then(({ recordShoppingFunnelEvent }) =>
+      recordShoppingFunnelEvent({
+        event: 'affiliate_redirect',
+        path: `/api/v1/public/deals/${deal.id}/redirect`,
+        dealId: deal.id,
+        slot: sanitizedPlacement,
+        metadata: { campaignId: deal.affiliateCampaignId, clickId, source: incomingSource },
+        userAgent,
+        clientIp: clientInfo.ip,
+        headers: {
+          'x-diagnostic': c.req.header('x-diagnostic'),
+          'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
+          'x-test-traffic': c.req.header('x-test-traffic'),
+          'x-owner-preview': c.req.header('x-owner-preview')
+        }
+      })
+    ).catch(() => {});
       try {
       const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
       CommercialLearningEngine.getInstance().recordCommercialEvent(sectorCode as any, {
@@ -12519,7 +12537,7 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
 
     // 3. Instagram / Telegram Caption Card pointing to /ig (or deal detail URL for Amazon/disallowed deals - CodeRabbit Finding 12)
     const categoryTag = catLower.replace(/[^a-z0-9]/g, '');
-    const isIgAllowed = !deal.sourceDomain?.toLowerCase().includes('amazon') && (deal as any).socialMediaPublishersAllowed !== false;
+    const isIgAllowed = !deal.sourceDomain?.toLowerCase().includes('amazon') && (deal as any).socialMediaPublishersAllowed === true;
     const igDestinationUrl = isIgAllowed ? `${siteUrl}/ig` : dealDetailUrl;
     const igTelegramCaption = `🔥 VERIFIED DROP: ${deal.title} is ₹${price.toLocaleString('en-IN')} today${refPrice > price ? ` (MRP ₹${refPrice.toLocaleString('en-IN')})` : ''}!\nVerified ${discount}% off at official store.\n\nTap link in bio to check official store + live Amazon price: ${igDestinationUrl}\n\n#Ad #DealsIndia #OnlineShopping${categoryTag ? ` #${categoryTag}` : ''}`;
 
@@ -16680,6 +16698,35 @@ apiRouter.post('/owner/onboarding/acceptance-record', async (c) => {
 });
 
 /**
+ * Public Shopper Funnel Event Beacon (recommendation_click, shopping_page_view)
+ */
+apiRouter.post('/public/shopping-event', async (c) => {
+  const clientIp = getTrustedClientIp(c).ip;
+  const body = await c.req.json().catch(() => ({}));
+  const event = body?.event;
+  if (event !== 'recommendation_click' && event !== 'shopping_page_view') {
+    return c.json({ success: false, error: 'INVALID_EVENT' }, 400);
+  }
+  const { recordShoppingFunnelEvent } = await import('../commission/shopping-funnel-tracker.js');
+  const res = await recordShoppingFunnelEvent({
+    event,
+    path: typeof body?.path === 'string' ? body.path.slice(0, 120) : undefined,
+    dealId: typeof body?.dealId === 'string' ? body.dealId.slice(0, 80) : undefined,
+    slot: typeof body?.slot === 'string' ? body.slot.slice(0, 40) : undefined,
+    query: typeof body?.query === 'string' ? body.query.slice(0, 200) : undefined,
+    userAgent: c.req.header('user-agent') || '',
+    clientIp,
+    headers: {
+      'x-diagnostic': c.req.header('x-diagnostic'),
+      'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
+      'x-test-traffic': c.req.header('x-test-traffic'),
+      'x-owner-preview': c.req.header('x-owner-preview')
+    }
+  });
+  return c.json({ success: true, recorded: res.recorded });
+});
+
+/**
  * Universal Fair-Price Checker & On-Demand Link Monetizer (Public)
  */
 apiRouter.post('/public/fair-price-check', async (c) => {
@@ -16727,8 +16774,37 @@ apiRouter.post('/public/fair-price-check', async (c) => {
   }
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const { recordShoppingFunnelEvent } = await import('../commission/shopping-funnel-tracker.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
   const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+
+  const rawPrefs = body?.preferences && typeof body.preferences === 'object' ? body.preferences : undefined;
+  const preferences = rawPrefs ? {
+    maxBudgetINR: Number(rawPrefs.maxBudgetINR) > 0 ? Math.round(Number(rawPrefs.maxBudgetINR)) : undefined,
+    skinType: typeof rawPrefs.skinType === 'string' ? rawPrefs.skinType.trim().slice(0, 60) : undefined,
+    activeIngredient: typeof rawPrefs.activeIngredient === 'string' ? rawPrefs.activeIngredient.trim().slice(0, 60) : undefined,
+    fragranceFree: rawPrefs.fragranceFree === true,
+    prioritizeLowestPricePerMl: rawPrefs.prioritizeLowestPricePerMl === true,
+    avoidIngredients: Array.isArray(rawPrefs.avoidIngredients)
+      ? rawPrefs.avoidIngredients.map((s: any) => String(s || '').trim().slice(0, 40)).filter(Boolean).slice(0, 5)
+      : undefined
+  } : undefined;
+
+  const trackHeaders = {
+    'x-diagnostic': c.req.header('x-diagnostic'),
+    'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
+    'x-test-traffic': c.req.header('x-test-traffic'),
+    'x-owner-preview': c.req.header('x-owner-preview')
+  };
+  void recordShoppingFunnelEvent({
+    event: 'preference_submitted',
+    path: '/api/v1/public/fair-price-check',
+    query: queryOrUrl,
+    metadata: { preferences },
+    userAgent: c.req.header('user-agent') || '',
+    clientIp,
+    headers: trackHeaders
+  });
 
   try {
     const result = await engine.checkFairPrice({
@@ -16739,8 +16815,24 @@ apiRouter.post('/public/fair-price-check', async (c) => {
       organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
       businessId: 'biz_platform_aro',
       siteUrl,
-      skipAiSynthesis: body?.skipAiSynthesis === true
+      skipAiSynthesis: body?.skipAiSynthesis === true,
+      preferences
     });
+
+    if (result.recommendations.length > 0) {
+      void recordShoppingFunnelEvent({
+        event: 'recommendation_shown',
+        path: '/api/v1/public/fair-price-check',
+        query: queryOrUrl,
+        metadata: {
+          count: result.recommendations.length,
+          dealIds: result.recommendations.map(r => r.dealId)
+        },
+        userAgent: c.req.header('user-agent') || '',
+        clientIp,
+        headers: trackHeaders
+      });
+    }
 
     // Interconnect Fair-Price Check -> demand_signals -> EV/100 Catalog Boost
     try {
@@ -17522,7 +17614,7 @@ apiRouter.post('/owner/instagram/publish', async (c) => {
     : candidates.find((d: any) =>
         d &&
         d.affiliateNetwork !== 'AMAZON_IN' &&
-        d.socialMediaPublishersAllowed !== false &&
+        d.socialMediaPublishersAllowed === true &&
         d.evidence?.socialMediaPublishersAllowed !== false &&
         d.evidenceJson?.socialMediaPublishersAllowed !== false &&
         Number(d.currentPriceINR || 0) > 0 &&
@@ -17549,7 +17641,7 @@ apiRouter.post('/owner/instagram/publish', async (c) => {
       imageUrl: typeof body?.imageUrl === 'string' && body.imageUrl.trim() ? body.imageUrl.trim() : selectedDeal.imageUrl,
       canonicalSlug: selectedDeal.canonicalSlug || selectedDeal.slug,
       productVerified: selectedDeal.productVerified === true,
-      socialMediaPublishersAllowed: selectedDeal.socialMediaPublishersAllowed !== false,
+      socialMediaPublishersAllowed: selectedDeal.socialMediaPublishersAllowed === true,
       evidence: selectedDeal.evidence || selectedDeal.evidenceJson || null
     },
     {

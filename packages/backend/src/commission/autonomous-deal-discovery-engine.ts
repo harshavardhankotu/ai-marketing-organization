@@ -234,6 +234,39 @@ export interface CrossStoreOption {
   isAmazonSearchRail?: boolean;
 }
 
+export interface ShopperPreferences {
+  maxBudgetINR?: number;
+  skinType?: string;
+  activeIngredient?: string;
+  fragranceFree?: boolean;
+  prioritizeLowestPricePerMl?: boolean;
+  avoidIngredients?: string[];
+}
+
+export interface RecommendationCard {
+  slot: 'BEST_MATCH' | 'BEST_VALUE' | 'ALTERNATIVE_CHOICE';
+  slotLabel: 'Best Match' | 'Best Value (₹/ml)' | 'Alternative Choice';
+  dealId: string;
+  slug: string;
+  title: string;
+  merchant: string;
+  brand: string;
+  currentPriceINR: number;
+  effectivePriceINR: number;
+  unitVolumeMl: number | null;
+  pricePerMlINR: number | null;
+  keyIngredients: string | null;
+  fragranceProfile: string | null;
+  fitScore: number;
+  matchReasoning: string;
+  tradeOffs: string;
+  unverifiedRequirements: string[];
+  trackingRedirectUrl: string;
+  disclosure: string;
+  ctaLabel: string;
+  youtubeReviews: Array<{ title: string; videoUrl: string; embedUrl?: string; channelName?: string }>;
+}
+
 export interface FairPriceCheckInput {
   queryOrUrl: string;
   targetFairPriceINR?: number;
@@ -243,6 +276,7 @@ export interface FairPriceCheckInput {
   businessId?: string;
   siteUrl?: string;
   skipAiSynthesis?: boolean;
+  preferences?: ShopperPreferences;
 }
 
 export interface FairPriceCheckResult {
@@ -257,9 +291,12 @@ export interface FairPriceCheckResult {
   effectivePriceAfterCouponINR: number | null;
   monetizedDeal: NormalizedDeal | null;
   crossStoreOptions: CrossStoreOption[];
+  recommendations: RecommendationCard[];
   priceHistory: Array<{ priceINR: number; observedAt: string }>;
   suggestions: string[];
   aiBuyerNote: string | null;
+  priceAlertsAvailable: boolean;
+  telegramAlertsAvailable: boolean;
   priceDropAlertRegistered: {
     registered: boolean;
     reason?: string;
@@ -4580,7 +4617,7 @@ export class AutonomousDealDiscoveryEngine {
           const out = JSON.parse(w.outputs_json || '{}');
           campaignMetaById.set(String(w.campaign_id), {
             epc_7d: Number(out.epc_7d || 0) || undefined,
-            social_media_publishers_allowed: out.social_media_publishers_allowed !== false
+            social_media_publishers_allowed: typeof out.social_media_publishers_allowed === 'boolean' ? out.social_media_publishers_allowed : undefined
           });
         } catch {}
       }
@@ -4620,7 +4657,7 @@ export class AutonomousDealDiscoveryEngine {
         observedImpressions,
         observedInquiries: inquiries,
         epc7d: campExtra?.epc_7d ?? deal.epc7d ?? deal.evidenceJson?.epc_7d ?? null,
-        socialMediaPublishersAllowed: campExtra?.social_media_publishers_allowed ?? deal.socialMediaPublishersAllowed ?? deal.evidenceJson?.socialMediaPublishersAllowed ?? true,
+        socialMediaPublishersAllowed: campExtra?.social_media_publishers_allowed ?? deal.socialMediaPublishersAllowed ?? deal.evidenceJson?.socialMediaPublishersAllowed ?? 'UNKNOWN',
         evaluationNowMs: evalNowMs
       };
       const result = calculateMarketArbitrageScore(evalDeal);
@@ -4678,7 +4715,7 @@ export class AutonomousDealDiscoveryEngine {
         observedInquiries: item.deal.observedInquiries || 0,
         exposureTier: item.deal.exposureTier || 'FRESH_UNEXPOSED',
         epc_7d: item.deal.epc7d ?? null,
-        socialMediaPublishersAllowed: item.deal.socialMediaPublishersAllowed !== false,
+        socialMediaPublishersAllowed: item.deal.socialMediaPublishersAllowed === true ? true : (item.deal.socialMediaPublishersAllowed === false ? false : 'UNKNOWN'),
         arbitrageScore: item.deal.arbitrageScore,
         expectedProfitPer100VisitorsINR: item.deal.expectedProfitPer100VisitorsINR || 0,
         evolutionStatus,
@@ -8625,17 +8662,33 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     const rawSearchString = monetizedDeal ? monetizedDeal.title : queryOrUrl;
-    const stopWords = new Set(['best', 'under', 'below', 'above', 'price', 'india', 'check', 'fair', 'buy', 'online', 'the', 'and', 'for', 'with', 'from', 'in']);
+    const stopWords = new Set(['best', 'under', 'below', 'above', 'price', 'india', 'check', 'fair', 'buy', 'online', 'the', 'and', 'for', 'with', 'from', 'in', 'avoid', 'skin', 'need', 'want']);
     const queryTokens = rawSearchString
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length >= 2 && !stopWords.has(w) && !/^\d+$/.test(w));
-    const maxBudgetMatch = rawSearchString.match(/under\s*(?:₹|rs\.?)?\s*([0-9,]+)/i);
-    const maxBudgetINR = maxBudgetMatch?.[1] ? Number(maxBudgetMatch[1].replace(/,/g, '')) : null;
 
-    const scoreMatch = (d: NormalizedDeal): number => {
-      const hay = `${d.title} ${d.brand} ${d.merchant} ${d.category}`.toLowerCase();
+    const maxBudgetMatch = rawSearchString.match(/(?:under|below|max|budget)\s*(?:₹|rs\.?|inr)?\s*([0-9,]+)/i);
+    const parsedBudget = maxBudgetMatch?.[1] ? Number(maxBudgetMatch[1].replace(/,/g, '')) : null;
+    const maxBudgetINR = (input.preferences?.maxBudgetINR && input.preferences.maxBudgetINR > 0)
+      ? input.preferences.maxBudgetINR
+      : parsedBudget;
+    const wantsFragranceFree = Boolean(input.preferences?.fragranceFree) ||
+      /(?:fragrance[\s-]?free|avoid\s+fragrance|no\s+fragrance|without\s+fragrance)/i.test(rawSearchString);
+    const wantsLightweight = /(?:lightweight|non[\s-]?greasy|non[\s-]?sticky|water[\s-]?light)/i.test(rawSearchString);
+    const skinTypePref = (input.preferences?.skinType || (rawSearchString.match(/\b(oily|combination|dry|sensitive|beginner)\b/i)?.[1] || '')).trim().toLowerCase();
+    const activePref = (input.preferences?.activeIngredient || (rawSearchString.match(/\b(niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|saffron)\b/i)?.[1] || '')).trim().toLowerCase();
+    const prioritizeLowestPricePerMl = Boolean(input.preferences?.prioritizeLowestPricePerMl) ||
+      /(?:₹\/ml|per\s*ml|best\s*value|cheapest\s*per\s*ml)/i.test(rawSearchString);
+    const avoidIngredients = Array.isArray(input.preferences?.avoidIngredients)
+      ? input.preferences!.avoidIngredients.map(s => String(s).trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    const scoreShopperFit = (d: NormalizedDeal): number => {
+      const specs = (d.evidenceJson?.rawSpecs || {}) as Record<string, string>;
+      const specsText = Object.entries(specs).map(([k, v]) => `${k} ${v}`).join(' ');
+      const hay = `${d.title} ${d.brand} ${d.merchant} ${d.category} ${d.targetBuyerSegment || ''} ${d.buyerFitSummary || d.evidenceJson?.buyerFitSummary || ''} ${specsText}`.toLowerCase();
       const hayTokens = new Set(
         hay
           .replace(/[^a-z0-9\s]/g, ' ')
@@ -8643,27 +8696,68 @@ export class AutonomousDealDiscoveryEngine {
           .filter(Boolean)
           .flatMap(w => (w.length > 3 && w.endsWith('s') ? [w, w.slice(0, -1)] : [w]))
       );
-      let hits = 0;
+      let fitScore = 0;
       for (const tok of queryTokens) {
         const stem = tok.length > 3 && tok.endsWith('s') ? tok.slice(0, -1) : tok;
         if (hayTokens.has(tok) || hayTokens.has(stem)) {
-          hits++;
+          fitScore += 8;
         }
       }
-      if (monetizedDeal && d.brand && monetizedDeal.brand && d.brand.toLowerCase() === monetizedDeal.brand.toLowerCase() && hits === 0) {
-        hits += 1;
+      if (activePref && hay.includes(activePref)) {
+        fitScore += 35;
       }
-      if (hits > 0 && maxBudgetINR && Number(d.currentPriceINR || 0) > maxBudgetINR * 1.4) {
-        hits = Math.max(0, hits - 1);
+      if (skinTypePref && hay.includes(skinTypePref)) {
+        fitScore += 18;
       }
-      return hits;
+      if (wantsLightweight && /(lightweight|non-greasy|non-sticky|water-light|quick-absorbing)/i.test(hay)) {
+        fitScore += 15;
+      }
+      if (wantsFragranceFree) {
+        const fragVal = String(specs['Fragrance Profile'] || '').toLowerCase();
+        if (fragVal.includes('fragrance-free') || fragVal.includes('zero artificial fragrance')) {
+          fitScore += 28;
+        } else if (fragVal.includes('no added fragrance')) {
+          fitScore += 20;
+        } else if (fragVal.includes('no fragrance note')) {
+          fitScore += 8;
+        }
+      }
+      for (const avoided of avoidIngredients) {
+        if (avoided !== 'fragrance' && hay.includes(avoided)) {
+          fitScore -= 40;
+        }
+      }
+      if (monetizedDeal && d.brand && monetizedDeal.brand && d.brand.toLowerCase() === monetizedDeal.brand.toLowerCase() && fitScore === 0) {
+        fitScore += 5;
+      }
+      const price = Number(d.currentPriceINR || 0);
+      if (fitScore > 0 && maxBudgetINR && price > 0) {
+        if (price <= maxBudgetINR) {
+          fitScore += 25;
+        } else if (price <= maxBudgetINR * 1.15) {
+          fitScore -= 15;
+        } else {
+          fitScore -= 60;
+        }
+      }
+      const mlPrice = Number(d.pricePerMlINR ?? d.evidenceJson?.pricePerMlINR ?? 0);
+      if (fitScore > 0 && prioritizeLowestPricePerMl && mlPrice > 0) {
+        fitScore += Math.max(0, Math.round(25 - mlPrice));
+      }
+      return fitScore;
     };
 
     const scoredCatalog = catalogDeals
       .filter(d => d.affiliateNetwork !== 'AMAZON_IN')
-      .map(d => ({ deal: d, score: scoreMatch(d) }))
+      .map(d => ({ deal: d, score: scoreShopperFit(d) }))
       .filter(x => x.score > 0 && (!monetizedDeal || x.deal.id !== monetizedDeal.id))
-      .sort((a, b) => b.score - a.score || (Number(a.deal.currentPriceINR || 999999) - Number(b.deal.currentPriceINR || 999999)));
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        const aMl = Number(a.deal.pricePerMlINR ?? a.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        const bMl = Number(b.deal.pricePerMlINR ?? b.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        if (aMl !== bMl) return aMl - bMl;
+        return Number(a.deal.currentPriceINR || 999999) - Number(b.deal.currentPriceINR || 999999);
+      });
 
     for (const sc of scoredCatalog.slice(0, 6)) {
       matchedDeals.push(sc.deal);
@@ -8717,7 +8811,7 @@ export class AutonomousDealDiscoveryEngine {
           ]);
           if (liveRes?.deals) {
             for (const ld of liveRes.deals) {
-              if (!matchedDeals.some(d => d.id === ld.id) && scoreMatch(ld) > 0) {
+              if (!matchedDeals.some(d => d.id === ld.id) && scoreShopperFit(ld) > 0) {
                 matchedDeals.push(ld);
               }
             }
@@ -8832,10 +8926,19 @@ export class AutonomousDealDiscoveryEngine {
     const activeCouponCode = bestOption?.couponCode || couponDeals[0]?.couponCode || null;
     const effectivePriceAfterCouponINR = bestOption?.effectivePriceINR ?? null;
 
+    const checkedDateIso = primaryOption
+      ? String(pricedDeals[0]?.lastCheckedAt || pricedDeals[0]?.updatedAt || new Date().toISOString())
+      : new Date().toISOString();
+    const checkedDateFormatted = new Date(checkedDateIso).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+
     let verdict: FairPriceVerdict = 'INSUFFICIENT_HISTORY';
     let verdictSummary = mergedHistory.length > 0
-      ? `Observed ${mergedHistory.length} price point(s) over ${Math.max(0, Math.round(historySpanDays))} day(s); at least 3 dated observations spanning 7+ days are required for a verified fair-price floor. Register an opt-in Target-Price Drop Alert below or compare live store prices directly.`
-      : 'No multi-day observed price history available yet (>=3 dated points over >=7 days required). Register a Target-Price Drop Alert below or check live store pricing.';
+      ? `Price checked on ${checkedDateFormatted} — building price history (${mergedHistory.length} snapshot${mergedHistory.length === 1 ? '' : 's'} observed). Compare live store prices and ₹/ml unit cost below.`
+      : `Price checked on ${checkedDateFormatted} — building price history. Compare live store pricing and ₹/ml unit cost below.`;
 
     if (hasSufficientHistory && primaryOption && estimatedFairPriceINR) {
       const pctVsFair = (primaryOption.effectivePriceINR - estimatedFairPriceINR) / estimatedFairPriceINR;
@@ -8881,28 +8984,182 @@ export class AutonomousDealDiscoveryEngine {
       });
     }
 
-    // Optional bounded Gemini Flash buyer note when real candidate key exists and skipAiSynthesis !== true
+    // Build up to 3 grounded preference-based recommendation cards (Best Match, Best Value ₹/ml, Alternative Choice)
+    const optionByDealId = new Map(rawOptions.filter(o => !o.isAmazonSearchRail).map(o => [o.dealId, o]));
+    const fitRankedDeals = [...pricedDeals]
+      .map(d => ({ deal: d, fitScore: scoreShopperFit(d) }))
+      .sort((a, b) => {
+        if (b.fitScore !== a.fitScore) return b.fitScore - a.fitScore;
+        const aMl = Number(a.deal.pricePerMlINR ?? a.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        const bMl = Number(b.deal.pricePerMlINR ?? b.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        return aMl - bMl;
+      });
+
+    const buildCard = (
+      deal: NormalizedDeal,
+      fitScore: number,
+      slot: RecommendationCard['slot'],
+      slotLabel: RecommendationCard['slotLabel']
+    ): RecommendationCard => {
+      const opt = optionByDealId.get(deal.id);
+      const specs = (deal.evidenceJson?.rawSpecs || {}) as Record<string, string>;
+      const unitVolumeMl = Number(deal.unitVolumeMl ?? deal.evidenceJson?.unitVolumeMl ?? 0) || null;
+      const pricePerMlINR = Number(deal.pricePerMlINR ?? deal.evidenceJson?.pricePerMlINR ?? 0) || (unitVolumeMl ? Number((Number(deal.currentPriceINR || 0) / unitVolumeMl).toFixed(2)) : null);
+      const keyIngredients = specs['Key Ingredients'] || null;
+      const fragranceProfile = specs['Fragrance Profile'] || null;
+      const texture = specs['Texture & Finish'] || null;
+      const hay = `${deal.title} ${deal.targetBuyerSegment || ''} ${deal.buyerFitSummary || ''} ${Object.values(specs).join(' ')}`.toLowerCase();
+
+      const unverifiedRequirements: string[] = [];
+      if (wantsFragranceFree) {
+        const fpLower = String(fragranceProfile || '').toLowerCase();
+        if (!fpLower || fpLower.includes('no fragrance note')) {
+          unverifiedRequirements.push(`Fragrance-free status cannot be fully verified from merchant listing ("${fragranceProfile || 'Not stated'}").`);
+        }
+      }
+      if (skinTypePref && !hay.includes(skinTypePref)) {
+        unverifiedRequirements.push(`Suitability for "${skinTypePref}" skin is not explicitly stated in the merchant listing.`);
+      }
+      for (const avoided of avoidIngredients) {
+        if (avoided !== 'fragrance' && !hay.includes(avoided)) {
+          unverifiedRequirements.push(`Absence of "${avoided}" is not explicitly verified in the listed ingredients.`);
+        }
+      }
+
+      const reasonParts: string[] = [];
+      if (maxBudgetINR) {
+        reasonParts.push(
+          Number(deal.currentPriceINR || 0) <= maxBudgetINR
+            ? `Within your ₹${maxBudgetINR.toLocaleString('en-IN')} budget at ₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}`
+            : `Listed at ₹${Number(deal.currentPriceINR).toLocaleString('en-IN')} (above your ₹${maxBudgetINR.toLocaleString('en-IN')} cap)`
+        );
+      } else {
+        reasonParts.push(`Verified merchant price ₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}`);
+      }
+      if (unitVolumeMl && pricePerMlINR) {
+        reasonParts.push(`${unitVolumeMl} ml pack (₹${pricePerMlINR.toFixed(2)}/ml)`);
+      }
+      if (keyIngredients) {
+        reasonParts.push(`Actives: ${keyIngredients}`);
+      }
+      if (texture) {
+        reasonParts.push(`Texture: ${texture}`);
+      }
+      if (fragranceProfile) {
+        reasonParts.push(`Fragrance: ${fragranceProfile}`);
+      }
+
+      const rawReviews = Array.isArray((deal as any).youtubeReviews) && (deal as any).youtubeReviews.length > 0
+        ? (deal as any).youtubeReviews
+        : ((deal as any).youtubeReview ? [(deal as any).youtubeReview] : []);
+      const youtubeReviews = rawReviews
+        .filter((r: any) => r && r.videoUrl)
+        .slice(0, 2)
+        .map((r: any) => ({
+          title: String(r.title || 'Independent Creator Review'),
+          videoUrl: String(r.videoUrl),
+          embedUrl: r.embedUrl ? String(r.embedUrl) : undefined,
+          channelName: r.channelName ? String(r.channelName) : undefined
+        }));
+
+      const fallbackTradeOff = deal.skipFitSummary || deal.evidenceJson?.skipFitSummary ||
+        (maxBudgetINR && Number(deal.currentPriceINR || 0) > maxBudgetINR
+          ? `Exceeds your ₹${maxBudgetINR.toLocaleString('en-IN')} budget cap.`
+          : 'Check full ingredient list on merchant page before purchase.');
+
+      return {
+        slot,
+        slotLabel,
+        dealId: deal.id,
+        slug: deal.slug || deal.canonicalSlug || deal.id,
+        title: deal.title,
+        merchant: deal.merchant,
+        brand: deal.brand,
+        currentPriceINR: Number(deal.currentPriceINR || 0),
+        effectivePriceINR: opt?.effectivePriceINR ?? Number(deal.currentPriceINR || 0),
+        unitVolumeMl,
+        pricePerMlINR,
+        keyIngredients,
+        fragranceProfile,
+        fitScore,
+        matchReasoning: reasonParts.join(' · ') + '.',
+        tradeOffs: fallbackTradeOff,
+        unverifiedRequirements,
+        trackingRedirectUrl: opt?.trackingRedirectUrl || `${siteUrl}/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=ai_assistant&placement=${slot.toLowerCase()}`,
+        disclosure: '#Affiliate — Official Brand Store',
+        ctaLabel: opt?.ctaLabel || `View at ${deal.merchant} →`,
+        youtubeReviews
+      };
+    };
+
+    const recommendations: RecommendationCard[] = [];
+    const usedIds = new Set<string>();
+    if (fitRankedDeals.length > 0) {
+      const bestMatch = fitRankedDeals[0];
+      usedIds.add(bestMatch.deal.id);
+      recommendations.push(buildCard(bestMatch.deal, bestMatch.fitScore, 'BEST_MATCH', 'Best Match'));
+    }
+
+    const valuePool = fitRankedDeals.filter(x => !usedIds.has(x.deal.id));
+    if (valuePool.length > 0) {
+      const bestValue = [...valuePool].sort((a, b) => {
+        const aMl = Number(a.deal.pricePerMlINR ?? a.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        const bMl = Number(b.deal.pricePerMlINR ?? b.deal.evidenceJson?.pricePerMlINR ?? 999999);
+        if (aMl !== bMl) return aMl - bMl;
+        return Number(a.deal.currentPriceINR || 999999) - Number(b.deal.currentPriceINR || 999999);
+      })[0];
+      usedIds.add(bestValue.deal.id);
+      recommendations.push(buildCard(bestValue.deal, bestValue.fitScore, 'BEST_VALUE', 'Best Value (₹/ml)'));
+    }
+
+    const altPool = fitRankedDeals.filter(x => !usedIds.has(x.deal.id));
+    if (altPool.length > 0) {
+      const altChoice = altPool[0];
+      usedIds.add(altChoice.deal.id);
+      recommendations.push(buildCard(altChoice.deal, altChoice.fitScore, 'ALTERNATIVE_CHOICE', 'Alternative Choice'));
+    }
+
+    // Grounded Gemini Flash trade-off reasoning (runs regardless of price-history count whenever key exists)
     let aiBuyerNote: string | null = null;
     const { GeminiProvider } = await import('../ai/gemini-provider.js');
-    if (!input.skipAiSynthesis && hasSufficientHistory && GeminiProvider.getCandidateKeys().length > 0 && rawOptions.some(o => o.effectivePriceINR > 0)) {
+    if (!input.skipAiSynthesis && GeminiProvider.getCandidateKeys().length > 0 && recommendations.length > 0) {
       try {
         const gemini = new GeminiProvider();
         const aiRes = await Promise.race([
-          gemini.generateStructured<{ buyerNote: string }>({
+          gemini.generateStructured<{
+            buyerNote: string;
+            cards?: Array<{
+              dealId: string;
+              matchReasoning?: string;
+              tradeOffs?: string;
+              unverifiedRequirements?: string[];
+            }>;
+          }>({
             agentId: 'fair_price_buyer_analyst',
-            systemInstruction: 'You are an Indian consumer fair-price analyst. Summarize in 1-2 factual sentences based strictly on the provided JSON prices whether the buyer should buy now or wait, without inventing any specs or prices.',
-            prompt: 'Return JSON { "buyerNote": "..." } summarizing this fair-price comparison.',
+            systemInstruction:
+              'You are an honest Indian consumer shopping assistant. Based STRICTLY on the verified product JSON rows and shopper preferences, return JSON with a concise 1-2 sentence buyerNote and per-card matchReasoning, tradeOffs, and unverifiedRequirements. NEVER invent specs, personal-use reviews, medical cure claims, or prices. If a shopper requirement is not explicitly confirmed in the listing, state it in unverifiedRequirements.',
+            prompt: 'Return JSON { "buyerNote": "...", "cards": [{ "dealId": "...", "matchReasoning": "...", "tradeOffs": "...", "unverifiedRequirements": ["..."] }] }.',
             context: {
               queryOrUrl,
-              verdict,
-              estimatedFairPriceINR,
-              lowestObservedPriceINR,
-              highestObservedPriceINR,
-              topOptions: rawOptions.filter(o => o.effectivePriceINR > 0).slice(0, 3).map(o => ({
-                merchant: o.merchant,
-                priceINR: o.currentPriceINR,
-                effectiveINR: o.effectivePriceINR,
-                coupon: o.couponCode
+              preferences: {
+                maxBudgetINR,
+                skinType: skinTypePref || null,
+                activeIngredient: activePref || null,
+                fragranceFree: wantsFragranceFree,
+                prioritizeLowestPricePerMl,
+                avoidIngredients
+              },
+              verifiedProducts: recommendations.map(r => ({
+                dealId: r.dealId,
+                slot: r.slotLabel,
+                title: r.title,
+                merchant: r.merchant,
+                priceINR: r.currentPriceINR,
+                unitVolumeMl: r.unitVolumeMl,
+                pricePerMlINR: r.pricePerMlINR,
+                keyIngredients: r.keyIngredients,
+                fragranceProfile: r.fragranceProfile,
+                defaultTradeOff: r.tradeOffs
               }))
             },
             thinkingLevel: 'low',
@@ -8910,16 +9167,43 @@ export class AutonomousDealDiscoveryEngine {
           }),
           new Promise<null>(r => setTimeout(() => r(null), 5000))
         ]);
-        if (aiRes && typeof (aiRes as any).data?.buyerNote === 'string') {
-          aiBuyerNote = String((aiRes as any).data.buyerNote).trim();
+        if (aiRes && (aiRes as any).data) {
+          const parsed = (aiRes as any).data;
+          if (typeof parsed.buyerNote === 'string' && parsed.buyerNote.trim()) {
+            aiBuyerNote = parsed.buyerNote.trim();
+          }
+          if (Array.isArray(parsed.cards)) {
+            for (const aiCard of parsed.cards) {
+              const target = recommendations.find(r => r.dealId === aiCard.dealId);
+              if (!target) continue;
+              if (typeof aiCard.matchReasoning === 'string' && aiCard.matchReasoning.trim()) {
+                target.matchReasoning = aiCard.matchReasoning.trim();
+              }
+              if (typeof aiCard.tradeOffs === 'string' && aiCard.tradeOffs.trim()) {
+                target.tradeOffs = aiCard.tradeOffs.trim();
+              }
+              if (Array.isArray(aiCard.unverifiedRequirements)) {
+                const cleaned = aiCard.unverifiedRequirements.map((s: any) => String(s || '').trim()).filter(Boolean);
+                if (cleaned.length > 0) target.unverifiedRequirements = cleaned;
+              }
+            }
+          }
         }
       } catch {}
     }
 
-    // Handle optional "Name Your Fair Price" target alert watch
+    const priceAlertsAvailable = Boolean((process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim());
+    const telegramAlertsAvailable = Boolean((process.env.TELEGRAM_BOT_TOKEN || '').trim()) && process.env.TELEGRAM_ENABLED === 'true';
+
+    // Handle optional "Name Your Fair Price" target alert watch (only when Brevo is configured)
     let priceDropAlertRegistered: FairPriceCheckResult['priceDropAlertRegistered'] = { registered: false };
     if (input.targetFairPriceINR !== undefined && input.alertEmail) {
-      if (input.consentGiven !== true) {
+      if (!priceAlertsAvailable) {
+        priceDropAlertRegistered = {
+          registered: false,
+          reason: 'ALERTS_PAUSED: Email price-drop delivery is currently not configured.'
+        };
+      } else if (input.consentGiven !== true) {
         priceDropAlertRegistered = {
           registered: false,
           reason: 'CONSENT_REQUIRED: Explicit opt-in consentGiven: true is required under DPDP Act 2023.'
@@ -8963,9 +9247,12 @@ export class AutonomousDealDiscoveryEngine {
       effectivePriceAfterCouponINR,
       monetizedDeal,
       crossStoreOptions: rawOptions.slice(0, 8),
+      recommendations,
       priceHistory: mergedHistory.slice(-15),
       suggestions,
       aiBuyerNote,
+      priceAlertsAvailable,
+      telegramAlertsAvailable,
       priceDropAlertRegistered
     };
   }

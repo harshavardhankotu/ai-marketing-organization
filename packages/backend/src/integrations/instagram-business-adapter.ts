@@ -99,7 +99,7 @@ export interface InstagramPublishDealInput {
   imageUrl?: string | null;
   canonicalSlug?: string | null;
   productVerified?: boolean;
-  socialMediaPublishersAllowed?: boolean;
+  socialMediaPublishersAllowed?: boolean | 'UNKNOWN';
   evidence?: Record<string, any> | null;
 }
 
@@ -895,7 +895,7 @@ export class InstagramBusinessAdapter {
   }> {
     const handle = `@${this.getHandle()}`;
     const socialAllowedFlag =
-      deal.socialMediaPublishersAllowed !== false &&
+      deal.socialMediaPublishersAllowed === true &&
       deal.evidence?.socialMediaPublishersAllowed !== false &&
       deal.evidence?.social_media_publishers_allowed !== false;
 
@@ -1040,7 +1040,7 @@ export class InstagramBusinessAdapter {
       const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 5 });
       topDeal = (eligible.deals || []).find(
         (d: any) =>
-          d.socialMediaPublishersAllowed !== false &&
+          d.socialMediaPublishersAllowed === true &&
           d.evidence?.socialMediaPublishersAllowed !== false &&
           Number(d.currentPriceINR || 0) > 0
       ) || eligible.deals?.[0] || null;
