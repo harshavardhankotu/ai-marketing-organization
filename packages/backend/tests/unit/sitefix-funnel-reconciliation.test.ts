@@ -786,18 +786,11 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
       }
 
       // (c) Attribution returns SQLite fallback summary with persistenceWarning -> UNAVAILABLE (null)
-      const repo = D1RevenueRepository.getInstance();
-      const origQuery = repo.query.bind(repo);
-      const prevNodeEnv = process.env.NODE_ENV;
-      const prevVitest = process.env.VITEST;
-      process.env.NODE_ENV = 'production';
-      delete process.env.VITEST;
-      const d1CfgSpy = vi.spyOn(repo, 'isRemoteD1Configured').mockReturnValue(true);
-      const d1QuerySpy = vi.spyOn(repo, 'query').mockImplementation(async (table: string, sql: string, params?: any[]) => {
-        if (table === 'durable_events' && sql.includes('SITEFIX_FUNNEL_EVENT')) {
-          throw new Error('Remote D1 read failed');
-        }
-        return origQuery(table, sql, params);
+      // Keep the persistenceWarning spy active across BOTH empty-ledger and positive-ledger requests
+      const degradedSummary = await sfaModule.getSiteFixFunnelAttributionSummaryAsync();
+      const warnSpy = vi.spyOn(sfaModule, 'getSiteFixFunnelAttributionSummaryAsync').mockResolvedValue({
+        ...degradedSummary,
+        persistenceWarning: 'D1 read failed (simulated); showing local fallback'
       });
       try {
         const warnRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
@@ -806,33 +799,67 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
         expect(warnJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
         expect(warnJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
         expect(warnJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+
+        // (d) Sandbox CAPTURED + is_test=0 rows in BOTH universal_orders and payment_orders are excluded
+        db.prepare(`
+          INSERT INTO universal_orders (
+            id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+            amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+            fulfillment_status, metadata_json, is_test, created_at, updated_at
+          ) VALUES (
+            'ord_rzp_sandbox_captured_0', 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Sandbox Buyer', 'sandbox@example.com', '',
+            49900, 'INR', 'CAPTURED', 'RAZORPAY', 'order_sbx_0', 'pay_sbx_0',
+            'DELIVERED', '{"mode":"TEST_SANDBOX","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+          )
+        `).run();
+        db.prepare(`
+          INSERT INTO payment_orders (
+            id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at
+          ) VALUES (
+            'po_sandbox_captured_0', 'biz_platform_aro', 'order_po_sbx_0', 499, 'INR', 'CAPTURED', 'rcpt_sbx_0',
+            '{"sku":"SITEFIX_AI_PACK_V1","mode":"TEST_SANDBOX"}', datetime('now'), datetime('now')
+          )
+        `).run();
+
+        warnSpy.mockRestore();
+        const sandboxOnlyRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(sandboxOnlyRes.status).toBe(200);
+        const sandboxOnlyJson = await sandboxOnlyRes.json();
+        expect(sandboxOnlyJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(0);
+        expect(sandboxOnlyJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(0);
+        expect(sandboxOnlyJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+
+        // (e) Positive authoritative ledger capture still counted even while degraded persistenceWarning spy is active
+        const posWarnSpy = vi.spyOn(sfaModule, 'getSiteFixFunnelAttributionSummaryAsync').mockResolvedValue({
+          ...degradedSummary,
+          persistenceWarning: 'D1 read failed (simulated); showing local fallback'
+        });
+        try {
+          db.prepare(`
+            INSERT INTO universal_orders (
+              id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+              amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+              fulfillment_status, metadata_json, is_test, created_at, updated_at
+            ) VALUES (
+              'ord_rzp_auth_live_1', 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Auth Buyer', 'auth@example.com', '',
+              49900, 'INR', 'CAPTURED', 'RAZORPAY', 'order_auth_1', 'pay_auth_1',
+              'DELIVERED', '{"mode":"LIVE","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+            )
+          `).run();
+
+          const posRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+          expect(posRes.status).toBe(200);
+          const posJson = await posRes.json();
+          expect(posJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+          expect(posJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+          expect(posJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+          expect(posWarnSpy).toHaveBeenCalled();
+        } finally {
+          posWarnSpy.mockRestore();
+        }
       } finally {
-        d1QuerySpy.mockRestore();
-        d1CfgSpy.mockRestore();
-        if (prevNodeEnv !== undefined) process.env.NODE_ENV = prevNodeEnv;
-        else delete process.env.NODE_ENV;
-        if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+        warnSpy.mockRestore();
       }
-
-      // (d) Positive authoritative ledger capture still counted even if attribution has persistenceWarning
-      db.prepare(`
-        INSERT INTO universal_orders (
-          id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
-          amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
-          fulfillment_status, metadata_json, is_test, created_at, updated_at
-        ) VALUES (
-          'ord_rzp_auth_live_1', 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Auth Buyer', 'auth@example.com', '',
-          49900, 'INR', 'CAPTURED', 'RAZORPAY', 'order_auth_1', 'pay_auth_1',
-          'DELIVERED', '{"mode":"LIVE","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
-        )
-      `).run();
-
-      const posRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
-      expect(posRes.status).toBe(200);
-      const posJson = await posRes.json();
-      expect(posJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
-      expect(posJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
-      expect(posJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
     } finally {
       db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
       db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();

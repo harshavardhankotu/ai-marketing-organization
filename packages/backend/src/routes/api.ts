@@ -8612,7 +8612,14 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         status, 
         (amount_minor / 100.0) as amount_inr 
       FROM universal_orders 
-      WHERE is_test = 0 AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')
+      WHERE is_test = 0
+        AND status NOT IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
+        AND COALESCE(metadata_json, '') NOT LIKE '%TEST_SANDBOX%'
+        AND COALESCE(metadata_json, '') NOT LIKE '%rzp_test%'
+        AND COALESCE(metadata_json, '') NOT LIKE '%"is_test":true%'
+        AND COALESCE(metadata_json, '') NOT LIKE '%"isTest":true%'
+        AND COALESCE(metadata_json, '') NOT LIKE '%"test":true%'
+        AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')
       UNION
       SELECT 
         order_id, 
@@ -8620,9 +8627,16 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         amount_inr 
       FROM payment_orders 
       WHERE (notes_json LIKE '%SITEFIX%' OR notes_json LIKE '%sitefix%') 
-        AND (notes_json NOT LIKE '%"is_test":true%' AND notes_json NOT LIKE '%"test":true%')
+        AND status NOT IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
+        AND COALESCE(notes_json, '') NOT LIKE '%"is_test":true%'
+        AND COALESCE(notes_json, '') NOT LIKE '%"isTest":true%'
+        AND COALESCE(notes_json, '') NOT LIKE '%"test":true%'
+        AND COALESCE(notes_json, '') NOT LIKE '%TEST_SANDBOX%'
+        AND COALESCE(notes_json, '') NOT LIKE '%rzp_test%'
+        AND COALESCE(notes_json, '') NOT LIKE '%"mode":"test"%'
+        AND COALESCE(notes_json, '') NOT LIKE '%"sandbox":"true"%'
         AND order_id NOT IN (
-          SELECT id FROM universal_orders WHERE is_test = 0
+          SELECT id FROM universal_orders
         )
     )
   `;
