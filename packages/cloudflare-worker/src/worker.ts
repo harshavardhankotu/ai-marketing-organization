@@ -106,6 +106,26 @@ async function runCycle(env: Env): Promise<void> {
           ? claimBody.jobsExecutedCount
           : (Array.isArray(claimBody.executedJobs) ? claimBody.executedJobs.length : 0);
         console.log(`[CRON WORKER] Drain completed: status=${claimRes.status}, claimed=${claimBody.claimed}, jobsExecuted=${jobsExecuted}, elapsed=${claimBody.elapsedMs ?? elapsedClaim}ms`);
+
+        // Step 3: Separate non-fatal bounded System Doctor maintenance only when idle & stale
+        if (claimBody.doctorMaintenanceDue === true) {
+          try {
+            const recoverUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/recover`;
+            const recoverRes = await fetch(recoverUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Cron-Secret': env.CRON_PING_SECRET,
+                'User-Agent': 'ai-marketing-cron-worker/1.0'
+              },
+              body: JSON.stringify({ systemDoctorOnly: true }),
+              signal: AbortSignal.timeout(12000)
+            });
+            console.log(`[CRON WORKER] Bounded maintenance completed: status=${recoverRes.status}`);
+          } catch (recoverErr: any) {
+            console.warn(`[CRON WORKER] Bounded maintenance non-fatal error: ${recoverErr?.message || 'unknown'}`);
+          }
+        }
       } else {
         const errTxt = await claimRes.text();
         console.error(`[CRON WORKER] Drain failed: status=${claimRes.status}, in ${elapsedClaim}ms: ${errTxt.substring(0, 300)}`);

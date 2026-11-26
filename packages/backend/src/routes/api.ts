@@ -1839,9 +1839,20 @@ apiRouter.post('/cron/ping', async (c) => {
   }, 200);
 });
 
-// POST /cron/recover — Clears >24h stale QUEUED jobs & parked-workflow BLOCKED jobs cleanly, and optionally hydrates Cuelinks payouts
+const SYSTEM_DOCTOR_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+
+function isSystemDoctorReportFresh(report: { completedAt?: string | null; startedAt?: string | null } | null | undefined, nowMs: number = Date.now()): boolean {
+  if (!report) return false;
+  const rawTs = report.completedAt || report.startedAt || '';
+  const tsMs = rawTs ? Date.parse(rawTs) : NaN;
+  if (!Number.isFinite(tsMs)) return false;
+  const ageMs = nowMs - tsMs;
+  return ageMs >= 0 && ageMs < SYSTEM_DOCTOR_FRESHNESS_MS;
+}
+
+// POST /cron/recover — Clears >24h stale QUEUED jobs & parked-workflow BLOCKED jobs cleanly, runs bounded System Doctor when stale, and optionally hydrates Cuelinks payouts
 apiRouter.post('/cron/recover', async (c) => {
-  const secret = c.req.header('X-Cron-Secret');
+  const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
   if (isProduction()) {
     const expectedSecret = process.env.CRON_PING_SECRET;
     if (!expectedSecret || isPlaceholderCredential(expectedSecret) || expectedSecret === 'cron_ping_default_dev') {
@@ -1858,26 +1869,83 @@ apiRouter.post('/cron/recover', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as any));
-  const rawThreshold = Number(body?.staleHoursThreshold);
-  const staleHoursThreshold = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : undefined;
-  const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
-  const queueRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({ staleHoursThreshold });
+  const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
+  const doctor = AutonomousSystemDoctor.getInstance();
+  const lastReport = doctor.getLastReport();
+  if (isSystemDoctorReportFresh(lastReport) && body?.force !== true) {
+    return c.json({
+      success: true,
+      skipped: true,
+      reason: 'FRESH_REPORT',
+      lastReport,
+      timestamp: new Date().toISOString()
+    });
+  }
 
+  const { D1Client } = await import('../db/d1-client.js');
+  const d1Client = D1Client.getInstance();
+  d1Client.startBackgroundCycle(2500);
+
+  let queueRecovery: any = null;
+  let doctorReport: any = null;
   let cuelinksHydration: any = null;
-  if (body?.hydrateCuelinksPayouts === true) {
-    try {
-      const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-      const hydrationLimit = Number.isFinite(Number(body?.limit)) && Number(body?.limit) > 0 ? Math.min(200, Number(body?.limit)) : 100;
-      cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', hydrationLimit);
-    } catch (err: any) {
-      cuelinksHydration = { error: err?.message || 'Cuelinks hydration failed' };
+  let budgetExceeded = false;
+  let cycleTelemetry: any = null;
+
+  try {
+    if (body?.systemDoctorOnly !== true) {
+      const rawThreshold = Number(body?.staleHoursThreshold);
+      const staleHoursThreshold = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : undefined;
+      const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
+      queueRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({
+        staleHoursThreshold,
+        skipSystemDoctor: true
+      });
     }
+
+    doctorReport = await doctor.runSelfHealingPass({
+      skipRecoveryRecursion: true,
+      skipLlm: true
+    });
+
+    if (body?.hydrateCuelinksPayouts === true) {
+      try {
+        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+        const hydrationLimit = Number.isFinite(Number(body?.limit)) && Number(body?.limit) > 0 ? Math.min(200, Number(body?.limit)) : 100;
+        cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', hydrationLimit);
+      } catch (err: any) {
+        cuelinksHydration = { error: err?.message || 'Cuelinks hydration failed' };
+      }
+    }
+  } catch (err: any) {
+    if (String(err?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
+      budgetExceeded = true;
+    } else {
+      throw err;
+    }
+  } finally {
+    cycleTelemetry = d1Client.endBackgroundCycle();
+  }
+
+  if (budgetExceeded || cycleTelemetry?.budgetStopped) {
+    return c.json({
+      success: true,
+      status: 'BOUNDED_PARTIAL',
+      budgetExceeded: true,
+      queueRecovery,
+      doctorReport,
+      d1CycleTelemetry: cycleTelemetry,
+      timestamp: new Date().toISOString()
+    });
   }
 
   return c.json({
     success: true,
+    skipped: false,
     queueRecovery,
+    doctorReport,
     cuelinksHydration,
+    d1CycleTelemetry: cycleTelemetry,
     timestamp: new Date().toISOString()
   });
 });
@@ -1918,6 +1986,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   let timedOutCount = 0;
   let failedCount = 0;
   let systemDoctorSummary: any = null;
+  let doctorMaintenanceDue = false;
+  let lastDoctorReport: any = null;
   let stats: any = null;
   let cycleTelemetry: any = null;
   let budgetStopped = false;
@@ -2013,35 +2083,13 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     }
 
     const ensureSystemDoctorSummary = async () => {
-      if (queueRecovery?.systemDoctorSummary) return queueRecovery.systemDoctorSummary;
-      if (budgetStopped || d1Client.isCycleBudgetExceeded()) return null;
       try {
         const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
         const doctor = AutonomousSystemDoctor.getInstance();
-        const SYSTEM_DOCTOR_FRESHNESS_MS = 6 * 60 * 60 * 1000;
-        const lastReport = doctor.getLastReport();
-        const reportTsRaw = lastReport?.completedAt || lastReport?.startedAt || '';
-        const reportTsMs = reportTsRaw ? Date.parse(reportTsRaw) : NaN;
-        const reportAgeMs = Number.isFinite(reportTsMs) ? Date.now() - reportTsMs : NaN;
-        const hasFreshReport = Boolean(
-          lastReport &&
-          Number.isFinite(reportAgeMs) &&
-          reportAgeMs >= 0 &&
-          reportAgeMs < SYSTEM_DOCTOR_FRESHNESS_MS
-        );
-        const d1StatusNow = d1Client.getD1Status();
-        const hasCycleReadHeadroom = (d1StatusNow.cycleBudgetCap - d1StatusNow.currentCycleRowsRead) >= 800;
-
-        if (
-          !process.env.VITEST &&
-          executedJobs.length === 0 &&
-          !hasFreshReport &&
-          (Date.now() - startTime) < Math.min(5000, budgetMs / 2) &&
-          !d1Client.isCycleBudgetExceeded() &&
-          hasCycleReadHeadroom
-        ) {
-          await doctor.runSelfHealingPass({ skipRecoveryRecursion: true, skipLlm: true });
-        }
+        lastDoctorReport = doctor.getLastReport();
+        doctorMaintenanceDue = executedJobs.length === 0 && !isSystemDoctorReportFresh(lastDoctorReport);
+        if (queueRecovery?.systemDoctorSummary) return queueRecovery.systemDoctorSummary;
+        if (budgetStopped || d1Client.isCycleBudgetExceeded()) return null;
         return await doctor.getPublicSystemDoctorSummary();
       } catch {
         return null;
@@ -2087,6 +2135,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       budgetStopped: cycleTelemetry?.budgetStopped || budgetStopped,
       message: budgetStopped ? 'D1_BACKGROUND_BUDGET_EXCEEDED' : 'NO_JOBS_DUE',
       queueStats: stats,
+      doctorMaintenanceDue,
+      lastDoctorReport,
       systemDoctorSummary,
       d1CycleTelemetry: cycleTelemetry
     });
@@ -2126,6 +2176,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     elapsedMs: Date.now() - startTime,
     job: finalJob,
     executionResult: lastExecResult,
+    doctorMaintenanceDue,
+    lastDoctorReport,
     systemDoctorSummary,
     d1CycleTelemetry: cycleTelemetry
   });
@@ -9704,6 +9756,8 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   } catch {}
 
   let systemDoctorSummary: any = null;
+  let doctorMaintenanceDue = false;
+  let lastDoctorReport: any = null;
   try {
     const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
     systemDoctorSummary = await AutonomousSystemDoctor.getInstance().getPublicSystemDoctorSummary();
