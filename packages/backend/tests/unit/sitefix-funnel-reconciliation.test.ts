@@ -752,4 +752,92 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
       db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
     }
   });
+
+  it('18. Distinguishes authoritative zero from missing/degraded attribution and preserves positive ledger captures', async () => {
+    const db = getDb();
+    db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`DROP TABLE IF EXISTS payment_orders_temp_backup`).run();
+    db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+    db.prepare(`ALTER TABLE payment_orders RENAME TO payment_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE payment_orders AS SELECT * FROM payment_orders_temp_backup WHERE 0`).run();
+
+    try {
+      // (a) Successful authoritative zero
+      const zeroRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(zeroRes.status).toBe(200);
+      const zeroJson = await zeroRes.json();
+      expect(zeroJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(0);
+      expect(zeroJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(0);
+      expect(zeroJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+
+      // (b) Attribution lookup throws / sfxTotals missing -> UNAVAILABLE (null)
+      const sfaModule = await import('../../src/tools/site-audit/sitefix-funnel-attribution.js');
+      const throwSpy = vi.spyOn(sfaModule, 'getSiteFixFunnelAttributionSummaryAsync').mockRejectedValueOnce(new Error('D1 attribution read error'));
+      try {
+        const errRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(errRes.status).toBe(200);
+        const errJson = await errRes.json();
+        expect(errJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(errJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(errJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        throwSpy.mockRestore();
+      }
+
+      // (c) Attribution returns SQLite fallback summary with persistenceWarning -> UNAVAILABLE (null)
+      const repo = D1RevenueRepository.getInstance();
+      const origQuery = repo.query.bind(repo);
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevVitest = process.env.VITEST;
+      process.env.NODE_ENV = 'production';
+      delete process.env.VITEST;
+      const d1CfgSpy = vi.spyOn(repo, 'isRemoteD1Configured').mockReturnValue(true);
+      const d1QuerySpy = vi.spyOn(repo, 'query').mockImplementation(async (table: string, sql: string, params?: any[]) => {
+        if (table === 'durable_events' && sql.includes('SITEFIX_FUNNEL_EVENT')) {
+          throw new Error('Remote D1 read failed');
+        }
+        return origQuery(table, sql, params);
+      });
+      try {
+        const warnRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(warnRes.status).toBe(200);
+        const warnJson = await warnRes.json();
+        expect(warnJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(warnJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(warnJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        d1QuerySpy.mockRestore();
+        d1CfgSpy.mockRestore();
+        if (prevNodeEnv !== undefined) process.env.NODE_ENV = prevNodeEnv;
+        else delete process.env.NODE_ENV;
+        if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+      }
+
+      // (d) Positive authoritative ledger capture still counted even if attribution has persistenceWarning
+      db.prepare(`
+        INSERT INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name, customer_email, customer_phone,
+          amount_minor, currency, status, payment_provider, provider_order_id, provider_payment_id,
+          fulfillment_status, metadata_json, is_test, created_at, updated_at
+        ) VALUES (
+          'ord_rzp_auth_live_1', 'biz_platform_aro', 'org_owner_primary', 'SITEFIX_AI_PACK_V1', 'Auth Buyer', 'auth@example.com', '',
+          49900, 'INR', 'CAPTURED', 'RAZORPAY', 'order_auth_1', 'pay_auth_1',
+          'DELIVERED', '{"mode":"LIVE","sku":"SITEFIX_AI_PACK_V1"}', 0, datetime('now'), datetime('now')
+        )
+      `).run();
+
+      const posRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(posRes.status).toBe(200);
+      const posJson = await posRes.json();
+      expect(posJson.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+      expect(posJson.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+      expect(posJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
+      db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+      db.prepare(`DROP TABLE IF EXISTS payment_orders`).run();
+      db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
+    }
+  });
 });

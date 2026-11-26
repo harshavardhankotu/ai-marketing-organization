@@ -8657,8 +8657,9 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     console.warn('[RevenueFunnel] Error querying durable_events for refunds:', durableErr.message);
   }
 
+  const ledgerOk = orderLedger !== null;
   const totalLedgerOrders = Number(orderLedger?.totalOrders ?? 0);
-  const ledgerCapturedCount = Number(orderLedger?.capturedCount ?? 0);
+  const ledgerCapturedCount = ledgerOk ? Number(orderLedger?.capturedCount ?? 0) : 0;
   saasGrossCapturedINR = Number(orderLedger?.grossCapturedINR ?? 0.00);
   const refundsCount = durableRefundCount > 0 ? durableRefundCount : Number(orderLedger?.refundCount ?? 0);
   const refundAmountINR = durableRefundAmountINR > 0 ? durableRefundAmountINR : Number(orderLedger?.refundAmountINR ?? 0.00);
@@ -8668,44 +8669,62 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const checkoutOpenInvokedCount = Number(sfxTotals?.checkout_open_invoked ?? 0);
   const checkoutModalOpenedCount = Number(sfxTotals?.checkout_modal_opened ?? 0);
   checkoutInitiated = checkoutOpenInvokedCount || checkoutModalOpenedCount;
-  const rawEventCaptured = Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
-  if (ledgerCapturedCount > 0) {
+  const rawCapturedMetric = sfxTotals ? (sfxTotals.payment_captured ?? sfxTotals.capture) : undefined;
+  const attributionAuthoritative = Boolean(
+    sitefixAttribution &&
+    sfxTotals &&
+    !sitefixAttribution.persistenceWarning &&
+    rawCapturedMetric !== undefined &&
+    rawCapturedMetric !== null &&
+    Number.isFinite(Number(rawCapturedMetric))
+  );
+
+  if (ledgerOk && ledgerCapturedCount > 0) {
     paymentCaptured = ledgerCapturedCount;
-  } else if (rawEventCaptured === 0) {
-    paymentCaptured = 0;
+    paymentCapturedStatus = 'VERIFIED';
+  } else if (!ledgerOk || !attributionAuthoritative) {
+    paymentCaptured = null;
+    paymentCapturedStatus = 'UNAVAILABLE';
   } else {
-    const capRes = await safeQueryAll<{ payload_json: string }>(
-      'durable_events',
-      `SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' AND (payload_json LIKE '%"payment_captured"%' OR payload_json LIKE '%"capture"%')`,
-      [],
-      'durable_events.sitefix_capture_filter'
-    );
-    const testOrdersRes = await safeQueryAll<{ id: string }>(
-      'universal_orders',
-      `SELECT id FROM universal_orders WHERE is_test = 1 OR status = 'TEST_CAPTURED' OR metadata_json LIKE '%"mode":"TEST_SANDBOX"%' OR metadata_json LIKE '%"mode": "TEST_SANDBOX"%'`,
-      [],
-      'universal_orders.test_sandbox_ids'
-    );
-    if (!capRes.ok || !testOrdersRes.ok) {
-      paymentCaptured = null;
-      paymentCapturedStatus = 'UNAVAILABLE';
+    const rawEventCaptured = Number(rawCapturedMetric);
+    if (rawEventCaptured === 0) {
+      paymentCaptured = 0;
+      paymentCapturedStatus = 'VERIFIED';
     } else {
-      const testOrderIds = new Set(
-        testOrdersRes.rows.map((r: any) => String(r?.id || '').trim()).filter(Boolean)
+      const capRes = await safeQueryAll<{ payload_json: string }>(
+        'durable_events',
+        `SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' AND (payload_json LIKE '%"payment_captured"%' OR payload_json LIKE '%"capture"%')`,
+        [],
+        'durable_events.sitefix_capture_filter'
       );
-      let nonTestCaptures = 0;
-      for (const row of capRes.rows) {
-        try {
-          const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
-          const st = String(p?.stage || '').toLowerCase();
-          if (st !== 'payment_captured' && st !== 'capture') continue;
-          if (p?.isProbe === true || p?.isTest === true || String(p?.mode || '').toUpperCase() === 'TEST_SANDBOX') continue;
-          const ordId = String(p?.orderId || '').trim();
-          if (ordId && testOrderIds.has(ordId)) continue;
-          nonTestCaptures++;
-        } catch {}
+      const testOrdersRes = await safeQueryAll<{ id: string }>(
+        'universal_orders',
+        `SELECT id FROM universal_orders WHERE is_test = 1 OR status = 'TEST_CAPTURED' OR metadata_json LIKE '%"mode":"TEST_SANDBOX"%' OR metadata_json LIKE '%"mode": "TEST_SANDBOX"%'`,
+        [],
+        'universal_orders.test_sandbox_ids'
+      );
+      if (!capRes.ok || !testOrdersRes.ok) {
+        paymentCaptured = null;
+        paymentCapturedStatus = 'UNAVAILABLE';
+      } else {
+        const testOrderIds = new Set(
+          testOrdersRes.rows.map((r: any) => String(r?.id || '').trim()).filter(Boolean)
+        );
+        let nonTestCaptures = 0;
+        for (const row of capRes.rows) {
+          try {
+            const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+            const st = String(p?.stage || '').toLowerCase();
+            if (st !== 'payment_captured' && st !== 'capture') continue;
+            if (p?.isProbe === true || p?.isTest === true || String(p?.mode || '').toUpperCase() === 'TEST_SANDBOX') continue;
+            const ordId = String(p?.orderId || '').trim();
+            if (ordId && testOrderIds.has(ordId)) continue;
+            nonTestCaptures++;
+          } catch {}
+        }
+        paymentCaptured = nonTestCaptures;
+        paymentCapturedStatus = 'VERIFIED';
       }
-      paymentCaptured = nonTestCaptures;
     }
   }
   // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
