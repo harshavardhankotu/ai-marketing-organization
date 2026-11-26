@@ -207,18 +207,18 @@ describe('V4.1 Durable Daily Revenue Operations & Autonomous Reliability', () =>
     expect(body.data.status).toBe('CONFIGURED');
     expect(body.data.triggerAccepted).toBe(false);
 
-    // Old ping (>75 min ago)
+    // Old ping (>13 hours ago)
     db.prepare(`
       INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, updated_at)
-      VALUES ('cloudflare_worker_cron', 'OBSERVED', datetime('now', '-90 minutes'), 5, datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET last_observed_ping = datetime('now', '-90 minutes')
+      VALUES ('cloudflare_worker_cron', 'OBSERVED', datetime('now', '-14 hours'), 5, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET last_observed_ping = datetime('now', '-14 hours')
     `).run();
 
     res = await app.request('/api/v1/cron/status');
     body = await res.json() as any;
     expect(body.data.status).toBe('STALE');
     expect(body.data.triggerAccepted).toBe(false);
-    expect(body.data.heartbeatAgeMinutes).toBeGreaterThanOrEqual(75);
+    expect(body.data.heartbeatAgeMinutes).toBeGreaterThanOrEqual(13 * 60);
   });
 
   // Criterion 7: GitHub commercial cycle script fails on partial/blocked work
