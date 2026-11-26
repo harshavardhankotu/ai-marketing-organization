@@ -1467,7 +1467,7 @@ apiRouter.get('/cron/status', async (c) => {
   const totalPings = Number(row?.total_pings || 0);
   const lastPingMs = parseSqliteTimestampMs(row?.last_observed_ping);
   const now = Date.now();
-  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (75 * 60 * 1000);
+  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (13 * 60 * 60 * 1000);
   const heartbeatAgeMinutes = lastPingMs > 0 ? Math.round((now - lastPingMs) / 60000) : null;
 
   // Retrieve durable queue statistics from Cloudflare D1
