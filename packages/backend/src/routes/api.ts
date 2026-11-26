@@ -2018,12 +2018,27 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       try {
         const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
         const doctor = AutonomousSystemDoctor.getInstance();
+        const SYSTEM_DOCTOR_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+        const lastReport = doctor.getLastReport();
+        const reportTsRaw = lastReport?.completedAt || lastReport?.startedAt || '';
+        const reportTsMs = reportTsRaw ? Date.parse(reportTsRaw) : NaN;
+        const reportAgeMs = Number.isFinite(reportTsMs) ? Date.now() - reportTsMs : NaN;
+        const hasFreshReport = Boolean(
+          lastReport &&
+          Number.isFinite(reportAgeMs) &&
+          reportAgeMs >= 0 &&
+          reportAgeMs < SYSTEM_DOCTOR_FRESHNESS_MS
+        );
+        const d1StatusNow = d1Client.getD1Status();
+        const hasCycleReadHeadroom = (d1StatusNow.cycleBudgetCap - d1StatusNow.currentCycleRowsRead) >= 800;
+
         if (
           !process.env.VITEST &&
-          !doctor.getLastReport() &&
           executedJobs.length === 0 &&
+          !hasFreshReport &&
           (Date.now() - startTime) < Math.min(5000, budgetMs / 2) &&
-          !d1Client.isCycleBudgetExceeded()
+          !d1Client.isCycleBudgetExceeded() &&
+          hasCycleReadHeadroom
         ) {
           await doctor.runSelfHealingPass({ skipRecoveryRecursion: true, skipLlm: true });
         }
@@ -8598,6 +8613,27 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   }
   const sfxTotals = sitefixAttribution?.totals;
 
+  // Shared test-mode predicates used by both the authoritative ledger UNION and fallback capture classification
+  const UNIVERSAL_ORDER_TEST_PREDICATE = `
+    is_test = 1
+    OR status IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
+    OR COALESCE(metadata_json, '') LIKE '%TEST_SANDBOX%'
+    OR COALESCE(metadata_json, '') LIKE '%rzp_test%'
+    OR COALESCE(metadata_json, '') LIKE '%"is_test":true%'
+    OR COALESCE(metadata_json, '') LIKE '%"isTest":true%'
+    OR COALESCE(metadata_json, '') LIKE '%"test":true%'
+  `;
+  const PAYMENT_ORDER_TEST_PREDICATE = `
+    status IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
+    OR COALESCE(notes_json, '') LIKE '%"is_test":true%'
+    OR COALESCE(notes_json, '') LIKE '%"isTest":true%'
+    OR COALESCE(notes_json, '') LIKE '%"test":true%'
+    OR COALESCE(notes_json, '') LIKE '%TEST_SANDBOX%'
+    OR COALESCE(notes_json, '') LIKE '%rzp_test%'
+    OR COALESCE(notes_json, '') LIKE '%"mode":"test"%'
+    OR COALESCE(notes_json, '') LIKE '%"sandbox":"true"%'
+  `;
+
   // Single Authoritative Provider-Verified Ledger Query (Stage U.1 Truth: zero Math.max, zero double-counting across tables)
   const orderLedgerQuery = `
     SELECT 
@@ -8612,13 +8648,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         status, 
         (amount_minor / 100.0) as amount_inr 
       FROM universal_orders 
-      WHERE is_test = 0
-        AND status NOT IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
-        AND COALESCE(metadata_json, '') NOT LIKE '%TEST_SANDBOX%'
-        AND COALESCE(metadata_json, '') NOT LIKE '%rzp_test%'
-        AND COALESCE(metadata_json, '') NOT LIKE '%"is_test":true%'
-        AND COALESCE(metadata_json, '') NOT LIKE '%"isTest":true%'
-        AND COALESCE(metadata_json, '') NOT LIKE '%"test":true%'
+      WHERE NOT (${UNIVERSAL_ORDER_TEST_PREDICATE})
         AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')
       UNION
       SELECT 
@@ -8627,14 +8657,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         amount_inr 
       FROM payment_orders 
       WHERE (notes_json LIKE '%SITEFIX%' OR notes_json LIKE '%sitefix%') 
-        AND status NOT IN ('TEST_CAPTURED', 'TEST_PAYMENT_CAPTURED')
-        AND COALESCE(notes_json, '') NOT LIKE '%"is_test":true%'
-        AND COALESCE(notes_json, '') NOT LIKE '%"isTest":true%'
-        AND COALESCE(notes_json, '') NOT LIKE '%"test":true%'
-        AND COALESCE(notes_json, '') NOT LIKE '%TEST_SANDBOX%'
-        AND COALESCE(notes_json, '') NOT LIKE '%rzp_test%'
-        AND COALESCE(notes_json, '') NOT LIKE '%"mode":"test"%'
-        AND COALESCE(notes_json, '') NOT LIKE '%"sandbox":"true"%'
+        AND NOT (${PAYMENT_ORDER_TEST_PREDICATE})
         AND order_id NOT IN (
           SELECT id FROM universal_orders
         )
@@ -8713,17 +8736,24 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       );
       const testOrdersRes = await safeQueryAll<{ id: string }>(
         'universal_orders',
-        `SELECT id FROM universal_orders WHERE is_test = 1 OR status = 'TEST_CAPTURED' OR metadata_json LIKE '%"mode":"TEST_SANDBOX"%' OR metadata_json LIKE '%"mode": "TEST_SANDBOX"%'`,
+        `SELECT id FROM universal_orders WHERE ${UNIVERSAL_ORDER_TEST_PREDICATE}`,
         [],
         'universal_orders.test_sandbox_ids'
       );
-      if (!capRes.ok || !testOrdersRes.ok) {
+      const testPaymentOrdersRes = await safeQueryAll<{ order_id: string }>(
+        'payment_orders',
+        `SELECT order_id FROM payment_orders WHERE ${PAYMENT_ORDER_TEST_PREDICATE}`,
+        [],
+        'payment_orders.test_sandbox_ids'
+      );
+      if (!capRes.ok || !testOrdersRes.ok || !testPaymentOrdersRes.ok) {
         paymentCaptured = null;
         paymentCapturedStatus = 'UNAVAILABLE';
       } else {
-        const testOrderIds = new Set(
-          testOrdersRes.rows.map((r: any) => String(r?.id || '').trim()).filter(Boolean)
-        );
+        const testOrderIds = new Set([
+          ...testOrdersRes.rows.map((r: any) => String(r?.id || '').trim()).filter(Boolean),
+          ...testPaymentOrdersRes.rows.map((r: any) => String(r?.order_id || '').trim()).filter(Boolean)
+        ]);
         let nonTestCaptures = 0;
         for (const row of capRes.rows) {
           try {

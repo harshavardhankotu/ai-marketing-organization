@@ -311,4 +311,84 @@ describe('PR #96: Seal D1 Leaks, Durable Storage Policy, Readiness Compatibility
       if (prevVitest !== undefined) process.env.VITEST = prevVitest;
     }
   });
+
+  it('(g) /claim-and-run enforces System Doctor freshness cooldown, re-arms after expiry on idle cycle, and skips under busy/constrained budget', async () => {
+    const app = createTestApp();
+    const queue = DurableJobQueue.getInstance();
+    const d1 = D1Client.getInstance();
+    const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+    const { AutomationRegistryEngine } = await import('../../src/automation/automation-registry-engine.js');
+    const doctor = AutonomousSystemDoctor.getInstance();
+    const engine = AutomationRegistryEngine.getInstance();
+
+    vi.spyOn(queue, 'recoverStaleAndBlockedJobs').mockResolvedValue({} as any);
+    vi.spyOn(queue, 'enqueueJobsBatch').mockResolvedValue({ enqueuedCount: 0, existingCount: 0, failedCount: 0, errors: [] });
+    vi.spyOn(queue, 'getQueueStats').mockResolvedValue({ queued: 0, running: 0, completed: 0, failed: 0, blocked: 0 } as any);
+    vi.spyOn(doctor, 'getPublicSystemDoctorSummary').mockResolvedValue({ status: 'HEALTHY' } as any);
+    const healSpy = vi.spyOn(doctor, 'runSelfHealingPass').mockResolvedValue({} as any);
+
+    const prevVitest = process.env.VITEST;
+    delete process.env.VITEST;
+    try {
+      // (a) Fresh lastReport within 6h cooldown skips System Doctor on idle cycle
+      const claimIdleSpy = vi.spyOn(queue, 'claimDueJob').mockResolvedValue(null);
+      const freshIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const reportSpy = vi.spyOn(doctor, 'getLastReport').mockReturnValue({ startedAt: freshIso, completedAt: freshIso } as any);
+
+      const resFresh = await app.request('/api/v1/cron/worker/claim-and-run', {
+        method: 'POST',
+        headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+      });
+      expect(resFresh.status).toBe(200);
+      expect(healSpy).not.toHaveBeenCalled();
+
+      // (b) Expired lastReport (> 6h) re-arms and runs System Doctor on idle cycle with headroom
+      const expiredIso = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+      reportSpy.mockReturnValue({ startedAt: expiredIso, completedAt: expiredIso } as any);
+      const resExpired = await app.request('/api/v1/cron/worker/claim-and-run', {
+        method: 'POST',
+        headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+      });
+      expect(resExpired.status).toBe(200);
+      expect(healSpy).toHaveBeenCalledTimes(1);
+
+      // (c1) Constrained D1 cycle read budget skips System Doctor even when lastReport is expired
+      healSpy.mockClear();
+      vi.spyOn(d1, 'getD1Status').mockReturnValue({
+        ...d1.getD1Status(),
+        currentCycleRowsRead: 2000,
+        cycleBudgetCap: 2500
+      });
+      const resBudget = await app.request('/api/v1/cron/worker/claim-and-run', {
+        method: 'POST',
+        headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+      });
+      expect(resBudget.status).toBe(200);
+      expect(healSpy).not.toHaveBeenCalled();
+
+      // (c2) Busy cycle (executedJobs.length > 0) skips System Doctor even when lastReport is expired and budget has headroom
+      vi.restoreAllMocks();
+      vi.spyOn(queue, 'recoverStaleAndBlockedJobs').mockResolvedValue({} as any);
+      vi.spyOn(queue, 'enqueueJobsBatch').mockResolvedValue({ enqueuedCount: 0, existingCount: 0, failedCount: 0, errors: [] });
+      vi.spyOn(queue, 'claimDueJob')
+        .mockResolvedValueOnce({ id: 'job_busy_1', workflowId: 'quota_health_checks', leaseToken: 'lease_b1' } as any)
+        .mockResolvedValue(null);
+      vi.spyOn(queue, 'completeJob').mockResolvedValue(undefined as any);
+      vi.spyOn(queue, 'getJobById').mockResolvedValue({ id: 'job_busy_1', workflowId: 'quota_health_checks', status: 'COMPLETED' } as any);
+      vi.spyOn(engine, 'executeWorkflow').mockResolvedValue({ status: 'COMPLETED', resultSummary: 'ok', durationMs: 5 } as any);
+      vi.spyOn(doctor, 'getLastReport').mockReturnValue({ startedAt: expiredIso, completedAt: expiredIso } as any);
+      vi.spyOn(doctor, 'getPublicSystemDoctorSummary').mockResolvedValue({ status: 'HEALTHY' } as any);
+      const healBusySpy = vi.spyOn(doctor, 'runSelfHealingPass').mockResolvedValue({} as any);
+      claimIdleSpy.mockRestore();
+
+      const resBusy = await app.request('/api/v1/cron/worker/claim-and-run', {
+        method: 'POST',
+        headers: { 'X-Cron-Secret': 'cron_ping_fixture_dev' }
+      });
+      expect(resBusy.status).toBe(200);
+      expect(healBusySpy).not.toHaveBeenCalled();
+    } finally {
+      if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+    }
+  });
 });

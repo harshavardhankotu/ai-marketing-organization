@@ -867,4 +867,87 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
       db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
     }
   });
+
+  it('19. Excludes test payment_orders captures in fallback while retaining live payment_orders captures and failing closed on lookup error', async () => {
+    const db = getDb();
+    db.prepare(`DROP TABLE IF EXISTS universal_orders_temp_backup`).run();
+    db.prepare(`DROP TABLE IF EXISTS payment_orders_temp_backup`).run();
+    db.prepare(`ALTER TABLE universal_orders RENAME TO universal_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE universal_orders AS SELECT * FROM universal_orders_temp_backup WHERE 0`).run();
+    db.prepare(`ALTER TABLE payment_orders RENAME TO payment_orders_temp_backup`).run();
+    db.prepare(`CREATE TABLE payment_orders AS SELECT * FROM payment_orders_temp_backup WHERE 0`).run();
+
+    try {
+      const testPoOrderId = 'order_po_legacy_test_1';
+      const livePoOrderId = 'order_po_legacy_live_1';
+      db.prepare(`
+        INSERT INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at
+        ) VALUES (
+          'po_legacy_test_1', 'biz_platform_aro', ?, 1, 'INR', 'CREATED', 'rcpt_test_1',
+          '{"sku":"SITEFIX_AI_TEST_V1","sandbox":"true"}', datetime('now'), datetime('now')
+        )
+      `).run(testPoOrderId);
+      db.prepare(`
+        INSERT INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at
+        ) VALUES (
+          'po_legacy_live_1', 'biz_platform_aro', ?, 499, 'INR', 'CREATED', 'rcpt_live_1',
+          '{"sku":"SITEFIX_AI_PACK_V1","mode":"live"}', datetime('now'), datetime('now')
+        )
+      `).run(livePoOrderId);
+
+      // Event payloads carry no test marker themselves; classification relies on payment_orders lookup
+      await recordSiteFixFunnelEvent({
+        stage: 'capture',
+        source: 'web',
+        isProbe: false,
+        orderId: testPoOrderId,
+        paymentId: 'pay_po_test_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+      await recordSiteFixFunnelEvent({
+        stage: 'payment_captured',
+        source: 'web',
+        isProbe: false,
+        orderId: livePoOrderId,
+        paymentId: 'pay_po_live_1',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+      });
+
+      const res = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data.selfServeSaaSFunnel.paymentCaptured).toBe(1);
+      expect(json.data.selfServeSaaSFunnel.stages.payment_captured).toBe(1);
+      expect(json.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('VERIFIED');
+
+      // Fail closed when payment_orders test-ID lookup fails
+      const repo = D1RevenueRepository.getInstance();
+      const origQuery = repo.query.bind(repo);
+      const failSpy = vi.spyOn(repo, 'query').mockImplementation(async (table: string, sql: string, params?: any[]) => {
+        if (table === 'payment_orders' && sql.includes('TEST_PAYMENT_CAPTURED')) {
+          throw new Error('payment_orders lookup failed');
+        }
+        return origQuery(table, sql, params);
+      });
+      try {
+        const failRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+        expect(failRes.status).toBe(200);
+        const failJson = await failRes.json();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCaptured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.stages.payment_captured).toBeNull();
+        expect(failJson.data.selfServeSaaSFunnel.paymentCapturedStatus).toBe('UNAVAILABLE');
+      } finally {
+        failSpy.mockRestore();
+      }
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS universal_orders`).run();
+      db.prepare(`ALTER TABLE universal_orders_temp_backup RENAME TO universal_orders`).run();
+      db.prepare(`DROP TABLE IF EXISTS payment_orders`).run();
+      db.prepare(`ALTER TABLE payment_orders_temp_backup RENAME TO payment_orders`).run();
+    }
+  });
 });
