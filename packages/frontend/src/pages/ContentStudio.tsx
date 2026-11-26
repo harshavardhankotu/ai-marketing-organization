@@ -29,12 +29,12 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
       api.getPublicComparisons(6).catch(() => null),
       api.getPublicBuyerGuides(6).catch(() => null)
     ]).then(([dealsRes, cmpRes, guideRes]) => {
-      const rawDeals = dealsRes?.deals ?? dealsRes?.data?.deals ?? dealsRes?.data;
-      setLiveDeals(Array.isArray(rawDeals) ? rawDeals : []);
-      const rawComparisons = cmpRes?.comparisons ?? cmpRes?.data?.comparisons ?? cmpRes?.data;
-      setComparisons(Array.isArray(rawComparisons) ? rawComparisons : []);
-      const rawGuides = guideRes?.guides ?? guideRes?.data?.guides ?? guideRes?.data;
-      setBuyerGuides(Array.isArray(rawGuides) ? rawGuides : []);
+      const dealsList = dealsRes?.data?.deals ?? dealsRes?.deals ?? (Array.isArray(dealsRes?.data) ? dealsRes.data : []);
+      const cmpList = cmpRes?.comparisons ?? cmpRes?.data?.comparisons ?? (Array.isArray(cmpRes?.data) ? cmpRes.data : []);
+      const guideList = guideRes?.guides ?? guideRes?.data?.guides ?? (Array.isArray(guideRes?.data) ? guideRes.data : []);
+      setLiveDeals(Array.isArray(dealsList) ? dealsList : []);
+      setComparisons(Array.isArray(cmpList) ? cmpList : []);
+      setBuyerGuides(Array.isArray(guideList) ? guideList : []);
     });
   }, []);
 
@@ -53,57 +53,56 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
   const bizName = activeBiz?.name || 'Single-Owner Catalog';
 
   // Convert live verified deals, /vs/ comparisons, and /best/ buyer guides into ready copyable distribution assets
+  const safeLiveDeals = Array.isArray(liveDeals) ? liveDeals : [];
+  const safeComparisons = Array.isArray(comparisons) ? comparisons : [];
+  const safeBuyerGuides = Array.isArray(buyerGuides) ? buyerGuides : [];
+
   const liveDistributionAssets = [
-    ...liveDeals
-      .filter((d: any) => Boolean(d?.slug || d?.id))
-      .map((d: any, idx: number) => {
-        const dealSlug = String(d.slug || d.id);
-        const price = Math.round(Number(d.dealPriceINR || d.currentPriceINR || 0));
-        const ytLine = d.youtubeReview?.videoUrl ? `\nReview Video: ${d.youtubeReview.videoUrl}` : '';
-        return {
-          id: `deal_ig_${dealSlug}_${idx}`,
-          title: d.title,
-          channel: 'INSTAGRAM',
-          language: 'English',
-          content: `#Ad Verified Fair-Price Offer: ${d.title}\nLive Price: ₹${price.toLocaleString('en-IN')} on ${d.merchant}${ytLine}\nComment "DEAL" or visit /ig for tracked Store + Amazon.in check links.`,
-          call_to_action: `${window.location.origin}/deals/${encodeURIComponent(dealSlug)}`,
-          status: d.youtubeReview?.videoUrl ? 'YOUTUBE_ENRICHED' : 'LIVE_DEAL',
-          externalUrl: `/deals/${encodeURIComponent(dealSlug)}`
-        };
-      }),
-    ...comparisons
-      .filter((c: any) => Boolean(c?.comparisonSlug || c?.slug))
-      .map((c: any, idx: number) => {
-        const cmpSlug = String(c.comparisonSlug || c.slug);
-        return {
-          id: `cmp_${cmpSlug}_${idx}`,
-          title: c.title || `${c.productA} vs ${c.productB}`,
-          channel: 'SEO_COMPARISON',
-          language: 'English',
-          content: c.summary || `Head-to-head Indian pricing comparison: ${c.title}`,
-          call_to_action: `${window.location.origin}/vs/${encodeURIComponent(cmpSlug)}`,
-          status: 'PUBLISHED_VS_PAGE',
-          externalUrl: `/vs/${encodeURIComponent(cmpSlug)}`
-        };
-      }),
-    ...buyerGuides
-      .filter((g: any) => Boolean(g?.intentSlug || g?.slug))
-      .map((g: any, idx: number) => {
-        const guideSlug = String(g.intentSlug || g.slug);
-        return {
-          id: `guide_${guideSlug}_${idx}`,
-          title: g.title || guideSlug,
-          channel: 'BUYER_GUIDE',
-          language: 'English',
-          content: g.intro || `Curated buyer guide for ${g.title || guideSlug}`,
-          call_to_action: `${window.location.origin}/best/${encodeURIComponent(guideSlug)}`,
-          status: 'PUBLISHED_GUIDE',
-          externalUrl: `/best/${encodeURIComponent(guideSlug)}`
-        };
-      })
+    ...safeLiveDeals.map((d: any, idx: number) => {
+      const price = Math.round(Number(d.dealPriceINR || d.currentPriceINR || 0));
+      const ytLine = d.youtubeReview?.videoUrl ? `\nReview Video: ${d.youtubeReview.videoUrl}` : '';
+      const dealKey = d.id || d.slug || idx;
+      const dealSlug = String(d.slug || d.id || '').trim();
+      return {
+        id: `deal_ig_${dealKey}_${idx}`,
+        title: d.title,
+        channel: 'INSTAGRAM',
+        language: 'English',
+        content: `#Ad Verified Fair-Price Offer: ${d.title}\nLive Price: ₹${price.toLocaleString('en-IN')} on ${d.merchant}${ytLine}\nComment "DEAL" or visit /ig for tracked Store + Amazon.in check links.`,
+        call_to_action: dealSlug ? `${window.location.origin}/deals/${encodeURIComponent(dealSlug)}` : '',
+        status: d.youtubeReview?.videoUrl ? 'YOUTUBE_ENRICHED' : 'LIVE_DEAL',
+        externalUrl: dealSlug ? `/deals/${encodeURIComponent(dealSlug)}` : undefined
+      };
+    }),
+    ...safeComparisons.map((c: any, idx: number) => {
+      const slug = String(c.comparisonSlug || c.slug || '').trim();
+      return {
+        id: `cmp_${slug || idx}_${idx}`,
+        title: c.title || (c.dealA?.title && c.dealB?.title ? `${c.dealA.title} vs ${c.dealB.title}` : `${c.productA || ''} vs ${c.productB || ''}`.trim() || slug),
+        channel: 'SEO_COMPARISON',
+        language: 'English',
+        content: c.summary || `Head-to-head Indian pricing comparison: ${c.title || slug}`,
+        call_to_action: slug ? `${window.location.origin}/vs/${encodeURIComponent(slug)}` : '',
+        status: 'PUBLISHED_VS_PAGE',
+        externalUrl: slug ? `/vs/${encodeURIComponent(slug)}` : undefined
+      };
+    }),
+    ...safeBuyerGuides.map((g: any, idx: number) => {
+      const slug = String(g.intentSlug || g.slug || '').trim();
+      return {
+        id: `guide_${slug || idx}_${idx}`,
+        title: g.title || g.h1 || slug,
+        channel: 'BUYER_GUIDE',
+        language: 'English',
+        content: g.intro || `Curated buyer guide for ${g.title || g.h1 || slug}`,
+        call_to_action: slug ? `${window.location.origin}/best/${encodeURIComponent(slug)}` : '',
+        status: 'PUBLISHED_GUIDE',
+        externalUrl: slug ? `/best/${encodeURIComponent(slug)}` : undefined
+      };
+    })
   ];
 
-  const baseAssets = [...(contentAssets || []), ...liveDistributionAssets];
+  const baseAssets = [...(Array.isArray(contentAssets) ? contentAssets : []), ...liveDistributionAssets];
 
   const filteredAssets = baseAssets.filter(asset => {
     const matchesLang = selectedLanguage === 'ALL' || asset.language === selectedLanguage;
@@ -192,8 +191,8 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredAssets.map((asset: any) => (
-            <div key={asset.id} className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between space-y-4">
+          {filteredAssets.map((asset: any, idx: number) => (
+            <div key={asset.id || `asset_${idx}`} className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between space-y-4">
               <div>
                 <div className="flex items-center justify-between mb-2 text-[11px] font-mono">
                   <div className="text-cyan-400">

@@ -1372,21 +1372,23 @@ export class AutonomousDealDiscoveryEngine {
       }
 
       const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
-      if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+      if (contentType && (contentType.includes('text/html') || contentType.includes('application/xhtml'))) {
         return [];
       }
 
-      const rawBody = await res.text();
-      const trimmedBody = rawBody.trimStart();
-      if (!trimmedBody || trimmedBody.startsWith('<')) {
-        return [];
-      }
-
-      let json: any;
-      try {
-        json = JSON.parse(trimmedBody);
-      } catch {
-        return [];
+      let json: any = null;
+      if (typeof res.text === 'function') {
+        const rawBody = (await res.text()).trim();
+        if (!rawBody || rawBody.startsWith('<')) {
+          return [];
+        }
+        try {
+          json = JSON.parse(rawBody);
+        } catch {
+          return [];
+        }
+      } else {
+        json = await res.json() as any;
       }
       const products = Array.isArray(json?.products) ? json.products : [];
 

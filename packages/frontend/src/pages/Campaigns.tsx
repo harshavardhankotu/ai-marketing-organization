@@ -140,10 +140,10 @@ export const Campaigns: React.FC<CampaignsProps> = ({
       api.getTelegramStatus().catch(() => null),
       api.getInstagramStatus().catch(() => null)
     ]).then(([cmpRes, guideRes, tgRes, igRes]) => {
-      const rawComparisons = cmpRes?.comparisons ?? cmpRes?.data?.comparisons ?? cmpRes?.data;
-      setComparisons(Array.isArray(rawComparisons) ? rawComparisons : []);
-      const rawGuides = guideRes?.guides ?? guideRes?.data?.guides ?? guideRes?.data;
-      setBuyerGuides(Array.isArray(rawGuides) ? rawGuides : []);
+      const cmpList = cmpRes?.comparisons ?? cmpRes?.data?.comparisons ?? (Array.isArray(cmpRes?.data) ? cmpRes.data : []);
+      const guideList = guideRes?.guides ?? guideRes?.data?.guides ?? (Array.isArray(guideRes?.data) ? guideRes.data : []);
+      setComparisons(Array.isArray(cmpList) ? cmpList : []);
+      setBuyerGuides(Array.isArray(guideList) ? guideList : []);
       setTelegramStatus(tgRes?.data || tgRes || null);
       setIgStatus(igRes?.data || igRes || null);
     });
@@ -501,7 +501,7 @@ export const Campaigns: React.FC<CampaignsProps> = ({
                   const guideSlug = String(g?.intentSlug || g?.slug || '').trim();
                   return (
                     <li key={`${guideSlug || g?.title || 'guide'}_${idx}`} className="flex items-center justify-between gap-2">
-                      <span className="truncate text-slate-300">{g.title || guideSlug || 'Buyer Guide'}</span>
+                      <span className="truncate text-slate-300">{g.title || g.h1 || guideSlug || 'Buyer Guide'}</span>
                       {guideSlug ? (
                         <a href={`/best/${encodeURIComponent(guideSlug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
                           <span>Open</span>
@@ -595,7 +595,7 @@ export const Campaigns: React.FC<CampaignsProps> = ({
       ) : (
         /* Campaigns List */
         <div className="space-y-4">
-          {filteredCampaigns.map((camp: any) => {
+          {filteredCampaigns.map((camp: any, idx: number) => {
             const achievedLeads = Number(camp.achieved_qualified_leads ?? 0);
             const targetLeads = Number(camp.target_qualified_leads ?? 100);
             const progress = targetLeads > 0 ? Math.min(100, Math.round((achievedLeads / targetLeads) * 100)) : 0;
@@ -605,7 +605,7 @@ export const Campaigns: React.FC<CampaignsProps> = ({
 
             return (
               <div
-                key={camp.id}
+                key={camp.id || `camp_${idx}`}
                 className="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden"
               >
                 <div className="p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
@@ -758,13 +758,13 @@ export const Campaigns: React.FC<CampaignsProps> = ({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/80">
-                          {campExps.map((exp: any) => {
+                          {campExps.map((exp: any, expIdx: number) => {
                             const m = getSafeMetrics(exp);
                             const outcome = exp.outcome || 'RUNNING';
                             const isEditing = editingMetricsExpId === exp.id;
 
                             return (
-                              <React.Fragment key={exp.id}>
+                              <React.Fragment key={exp.id || `exp_${expIdx}`}>
                                 <tr className="hover:bg-slate-900/60 transition-colors">
                                   <td className="py-2.5 px-3 align-top max-w-xs">
                                     <div className="font-semibold text-slate-200">{m.variantLabel}</div>
