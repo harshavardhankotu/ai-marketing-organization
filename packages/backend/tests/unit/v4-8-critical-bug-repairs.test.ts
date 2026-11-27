@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { DurableJobQueue } from '../../src/automation/durable-job-queue.js';
+import { getDb } from '../../src/db/client.js';
 import { CuelinksSyncManager } from '../../src/commission/cuelinks-sync-manager.js';
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
 import { CuelinksV3Client } from '../../src/commission/cuelinks-v3-client.js';
@@ -10,6 +11,9 @@ describe('V4.8 Critical Business Logic & Queue Repair Test Suite', () => {
   let queue: DurableJobQueue;
 
   beforeEach(() => {
+    try {
+      getDb().prepare(`DELETE FROM automation_jobs WHERE workflow_id IN ('competitor_pricing_research', 'prospect_discovery_validation')`).run();
+    } catch {}
     DurableJobQueue.resetInstance();
     queue = DurableJobQueue.getInstance();
   });

@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+vi.hoisted(() => {
+  process.env.DATABASE_PATH = ':memory:';
+});
 import { getDb } from '../../src/db/client.js';
 import { D1Client } from '../../src/db/d1-client.js';
 import { DurableJobQueue } from '../../src/automation/durable-job-queue.js';
@@ -19,6 +22,14 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  afterAll(() => {
+    try {
+      const db = getDb();
+      db.prepare(`DELETE FROM automation_jobs`).run();
+      db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    } catch {}
   });
 
   it('a) suppresses Cuelinks convertLink & 302 redirect for suspected_bot, known_bot, and test while allowing human/browser_candidate, and suppresses /r/:slug/:ref for x-internal-admin', async () => {
@@ -125,6 +136,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     const d1Client = D1Client.getInstance();
 
     db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
     // Seed 1 older active job for affiliate_offer_reconciliation + 60 newer jobs for other workflows
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
@@ -213,6 +225,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     db.prepare(`DROP TABLE IF EXISTS cost_ledger`).run();
     db.prepare(`DROP TABLE IF EXISTS brevo_daily_quota`).run();
     db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
     db.prepare(`DELETE FROM public_deals`).run();
 
     // Seed AFFILIATE_VERIFIED deal inventory but ZERO completed commercial workflows
@@ -308,6 +321,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     const db = getDb();
     const queue = DurableJobQueue.getInstance();
     db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
 
     // 1. >50 queued jobs for one workflow: newest payload must be retained after recovery
     for (let i = 0; i < 55; i++) {
@@ -324,6 +338,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
 
     // 2. Mixed future-scheduled and already-due jobs: due job must NOT be displaced by future job
     db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
       VALUES
@@ -337,6 +352,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     expect(futRow.status).toBe('NO_ACTION_DUE');
 
     // 3. Terminal counters & ordered lastSuccess
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
       VALUES
@@ -367,5 +383,115 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     expect(syncDigest.commerceAutopilotStatus?.latestSuccessfulCommercialWorkflow).toBe('affiliate_offer_reconciliation');
     expect(aros.commercialPerformance.outboundClicks.value).toBe(1);
     expect(asyncDigest.commerceAutopilotStatus?.genuineHumanOutboundClicks).toBe(1);
+  });
+
+  it('g) protects lastSuccessfulExecutionAt from FAILED_PERMANENTLY/PARTIAL/DEFERRED, handles >100 queued compaction boundary, and bounds terminal getQueueStats() reads', async () => {
+    const db = getDb();
+    const queue = DurableJobQueue.getInstance();
+
+    // 1. Success-vs-failure timestamp: COMPLETED at 12:00 + FAILED_PERMANENTLY/PARTIAL/DEFERRED at 13:00 -> stays 12:00
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
+      VALUES
+        ('ts_ok', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'ts_ok', 'COMPLETED', 0, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-27 12:00:00', datetime('now'), datetime('now')),
+        ('ts_fail', 'quota_health_checks', 'biz_platform_aro', 'org_owner_primary', 'ts_fail', 'FAILED_PERMANENTLY', 1, '{}', '{}', 3, 3, datetime('now'), '{}', '2026-11-27 13:00:00', datetime('now'), datetime('now')),
+        ('ts_part', 'daily_market_demand_research', 'biz_platform_aro', 'org_owner_primary', 'ts_part', 'PARTIAL', 1, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-27 13:15:00', datetime('now'), datetime('now')),
+        ('ts_def', 'seasonal_demand_research', 'biz_platform_aro', 'org_owner_primary', 'ts_def', 'DEFERRED', 1, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-27 13:30:00', datetime('now'), datetime('now'))
+    `).run();
+
+    const tsStats = await queue.getQueueStats();
+    expect(tsStats.lastSuccessfulExecutionAt).toBe('2026-11-27 12:00:00');
+
+    // Also verify live transition to FAILED_PERMANENTLY never overwrites 12:00:00
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES ('ts_run_fail', 'quota_health_checks', 'biz_platform_aro', 'org_owner_primary', 'ts_rf', 'RUNNING', 1, '{}', '{}', 3, 3, datetime('now'), '{}', datetime('now'), datetime('now'))
+    `).run();
+    await queue.failAttempt('ts_run_fail', 'HARD_FAIL', false);
+    const tsStatsAfterFail = await queue.getQueueStats();
+    expect(tsStatsAfterFail.failedPermanently).toBe(2);
+    expect(tsStatsAfterFail.lastSuccessfulExecutionAt).toBe('2026-11-27 12:00:00');
+
+    // 2. >100 queued jobs boundary + mixed due and future-scheduled jobs
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    for (let i = 0; i < 105; i++) {
+      const minsAgo = 200 - i;
+      db.prepare(`
+        INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+        VALUES (?, 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', ?, 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-' || ? || ' minutes'), '{}', datetime('now', '-' || ? || ' minutes'), datetime('now', '-' || ? || ' minutes'))
+      `).run(`q105_${i}`, `qk_${i}`, minsAgo, minsAgo, minsAgo);
+    }
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES ('q_future_106', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'qk_fut', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '+2 hours'), '{}', datetime('now', '-500 minutes'), datetime('now', '-500 minutes'))
+    `).run();
+
+    let compactionRowsRead = 0;
+    const origPrepare = db.prepare.bind(db);
+    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      const stmt = origPrepare(sql);
+      const origAll = stmt.all.bind(stmt);
+      stmt.all = (...args: any[]) => {
+        const res = origAll(...args);
+        if (sql.includes('FROM automation_jobs')) compactionRowsRead += Array.isArray(res) ? res.length : 0;
+        return res;
+      };
+      return stmt;
+    });
+
+    await queue.compactStaleDuplicateQueueJobs();
+    prepareSpy.mockRestore();
+
+    const newestDue = db.prepare(`SELECT status FROM automation_jobs WHERE id = 'q105_104'`).get() as any;
+    const futJob = db.prepare(`SELECT status FROM automation_jobs WHERE id = 'q_future_106'`).get() as any;
+    expect(newestDue.status).toBe('QUEUED');
+    expect(futJob.status).toBe('NO_ACTION_DUE');
+    expect(compactionRowsRead).toBeLessThanOrEqual(150);
+
+    // 3. Bounded terminal stats on 300+ historical terminal rows
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    for (let i = 0; i < 310; i++) {
+      const st = i < 10 ? 'FAILED_PERMANENTLY' : i < 25 ? 'PARTIAL' : i < 50 ? 'DEFERRED' : 'COMPLETED';
+      db.prepare(`
+        INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
+        VALUES (?, 'daily_market_demand_research', 'biz_platform_aro', 'org_owner_primary', ?, ?, 1, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-27 12:00:00', datetime('now'), datetime('now'))
+      `).run(`term300_${i}`, `tk_${i}`, st);
+    }
+
+    const initialStats = await queue.getQueueStats();
+    expect(initialStats.failedPermanently).toBe(10);
+    expect(initialStats.partial).toBe(15);
+    expect(initialStats.deferred).toBe(25);
+    expect(initialStats.completed).toBe(260);
+
+    let steadyRowsRead = 0;
+    const statsSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      const stmt = origPrepare(sql);
+      const origAll = stmt.all.bind(stmt);
+      const origGet = stmt.get.bind(stmt);
+      stmt.all = (...args: any[]) => {
+        const res = origAll(...args);
+        steadyRowsRead += Array.isArray(res) ? res.length : 0;
+        return res;
+      };
+      stmt.get = (...args: any[]) => {
+        const res = origGet(...args);
+        if (res) steadyRowsRead += 1;
+        return res;
+      };
+      return stmt;
+    });
+
+    const steadyStats = await queue.getQueueStats();
+    statsSpy.mockRestore();
+
+    expect(steadyStats.failedPermanently).toBe(10);
+    expect(steadyStats.completed).toBe(260);
+    expect(steadyRowsRead).toBeLessThanOrEqual(10);
+    console.log(`PR106_MEASURED_READS: compactionRowsRead=${compactionRowsRead} steadyTerminalStatsRowsRead=${steadyRowsRead}`);
   });
 });
