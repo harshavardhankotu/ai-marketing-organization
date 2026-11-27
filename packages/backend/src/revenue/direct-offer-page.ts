@@ -540,12 +540,12 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
         <span class="price-pill">#Affiliate Disclosure: Qualifying links may earn a commission</span>
       </div>
       <p style="color:#94a3b8;font-size:0.88rem;margin-bottom:1rem;">
-        Enter a plain-English request or set your filters below to get up to 3 grounded picks: Best Match, Best Value (₹/ml), and Alternative Choice.
+        Enter a plain-English request for <strong>laptops, skincare, or everyday tech</strong> (e.g. <em>&ldquo;best laptop under 60000 for coding, 16GB RAM, lightweight&rdquo;</em> or <em>&ldquo;niacinamide serum under 800, oily skin, avoid fragrance&rdquo;</em>) to get up to 3 grounded picks.
       </p>
       <form onsubmit="handleAssistantQuery(event)" style="display:grid;gap:0.85rem;">
         <div>
           <label for="assistant-query">What are you looking for? *</label>
-          <input id="assistant-query" type="text" required maxlength="300" placeholder="e.g. niacinamide serum under 800, oily skin, avoid fragrance" value="niacinamide serum under 800, oily skin, avoid fragrance">
+          <input id="assistant-query" type="text" required maxlength="300" placeholder="e.g. best laptop under 60000 for coding, 16GB RAM — or niacinamide serum under 800" value="niacinamide serum under 800, oily skin, avoid fragrance">
         </div>
         <div class="form-grid">
           <div>

@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getDb } from '../../src/db/client.js';
 import { ContentAssetEngine } from '../../src/commission/content-asset-engine.js';
 import { UnifiedQuotaService } from '../../src/quota/unified-quota-service.js';
-import { createHighIntentStarterDeals, STATIC_SEED_PRICE_VERIFIED_AT } from '../../src/commission/starter-deals.js';
+import { createHighIntentStarterDeals, STATIC_SEED_PRICE_VERIFIED_AT, LAPTOP_SEED_PRICE_VERIFIED_AT } from '../../src/commission/starter-deals.js';
 import { D1Client } from '../../src/db/d1-client.js';
 import { GooglePageSpeedClient } from '../../src/integrations/google-pagespeed-client.js';
 import { SiteAuditService } from '../../src/tools/site-audit/site-audit-service.js';
@@ -142,15 +142,16 @@ describe('PR #93: Honesty Bugs, Daily D1 Budget, EPC Physical Engine & B2B Pilot
   describe('Part 1 Item 2: Static Timestamps & EPC Campaign Filtering', () => {
     it('uses explicit static timestamp and isSeedFallback on all starter deals without runtime new Date()', () => {
       const deals1 = createHighIntentStarterDeals();
-      expect(deals1.length).toBe(6);
+      expect(deals1.length).toBe(11);
 
       for (const d of deals1) {
+        const expectedTs = d.subCategory === 'laptop' ? LAPTOP_SEED_PRICE_VERIFIED_AT : STATIC_SEED_PRICE_VERIFIED_AT;
         expect(d.isSeedFallback).toBe(true);
-        expect(d.observedAt).toBe(STATIC_SEED_PRICE_VERIFIED_AT);
-        expect(d.lastCheckedAt).toBe(STATIC_SEED_PRICE_VERIFIED_AT);
-        expect(d.lastVerifiedAt).toBe(STATIC_SEED_PRICE_VERIFIED_AT);
-        expect(d.createdAt).toBe(STATIC_SEED_PRICE_VERIFIED_AT);
-        expect(d.updatedAt).toBe(STATIC_SEED_PRICE_VERIFIED_AT);
+        expect(d.observedAt).toBe(expectedTs);
+        expect(d.lastCheckedAt).toBe(expectedTs);
+        expect(d.lastVerifiedAt).toBe(expectedTs);
+        expect(d.createdAt).toBe(expectedTs);
+        expect(d.updatedAt).toBe(expectedTs);
       }
 
       // Verify no SaaS / AppSumo starter seeds exist

@@ -207,9 +207,10 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
   describe('Part B Item 5: High-Intent Decision-Grade Starter Inventory', () => {
     it('creates 6 high-intent skincare face serum starter deals across World of Asaya, Plum, Dot & Key, Kama Ayurveda', () => {
       const starters = createHighIntentStarterDeals();
-      expect(starters.length).toBe(6);
+      const serums = starters.filter(d => d.subCategory === 'face-serum');
+      expect(serums.length).toBe(6);
 
-      for (const deal of starters) {
+      for (const deal of serums) {
         expect(deal.isSeedFallback).toBe(true);
         expect(deal.observedAt).toBe('2026-11-25T15:00:00.000Z');
         expect(deal.subCategory).toBe('face-serum');

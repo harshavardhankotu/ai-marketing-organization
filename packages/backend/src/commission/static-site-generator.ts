@@ -391,6 +391,20 @@ interface HubSeedDefinition {
 
 const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
   {
+    intentSlug: 'laptops-under-60000-india',
+    title: 'Best Laptops Under ₹60,000 in India — Verified Specs & Store Prices',
+    h1: 'Best Laptops Under ₹60,000 in India (RAM, CPU & Weight Compared)',
+    description: 'Compare verified Acer India laptops under ₹60,000 (and up to ₹70,000) by CPU, 16GB vs 8GB RAM, SSD capacity, display panel, and weight with upfront #Affiliate disclosures.',
+    priceCapLabel: 'Under ₹60,000',
+    categoryLabel: 'Laptops & PCs',
+    maxPriceINR: 60000,
+    predicate: (d, text, price) => {
+      const sub = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase();
+      const isLaptop = sub === 'laptop' || /\b(laptop|aspire|swift|nitro)\b/i.test(text);
+      return price > 0 && price <= 60000 && isLaptop;
+    }
+  },
+  {
     intentSlug: 'niacinamide-serums-india',
     title: 'Best Niacinamide Serums in India — Cost per ml & Ingredient Comparison',
     h1: 'Best Niacinamide Face Serums in India (Cost per ml & Formula Check)',
