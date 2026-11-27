@@ -2280,9 +2280,6 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
       </div>`;
     };
 
-    const isLaptopHub = hub.intentSlug.includes('laptop') ||
-      deals.some((d: any) => String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase() === 'laptop');
-
     const rowsHtml = deals.map((d: any, idx: number) => {
       const slug = d.slug || d.canonicalSlug || d.id;
       const observedAt = formatHumanVerifiedDate(d.lastVerifiedAt || d.lastCheckedAt || d.updatedAt || '');
@@ -2291,7 +2288,9 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
       const rail1 = appendAttributionParams(`${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect`, { utmSource: 'best_hub_table', placement: 'best_hub_table' }, options?.attribution);
       const rail2 = appendAttributionParams(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`, { placement: 'best_hub_table_amazon' }, options?.attribution);
       const hasMrp = Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0);
-      const laptopSpecsHtml = isLaptopHub
+      const isLaptopRow = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase() === 'laptop' ||
+        (/\b(laptop|notebook|ultrabook|aspire|swift|nitro)\b/i.test(String(d?.title || '')) && !/\b(earbud|keyboard\s*cover|mouse|serum)\b/i.test(String(d?.title || '')));
+      const rowSpecsHtml = isLaptopRow
         ? `<div style="font-size:0.74rem;color:#cbd5e1;margin-top:0.18rem;">Processor: ${this.escapeHtml(specs['Processor'] || 'Not listed')} &bull; RAM: ${this.escapeHtml(specs['RAM'] || 'Not listed')} &bull; Storage: ${this.escapeHtml(specs['Storage'] || 'Not listed')} &bull; Display: ${this.escapeHtml(specs['Display'] || 'Not listed')} &bull; Weight: ${this.escapeHtml(specs['Weight'] || 'Not listed')}</div>`
         : (specs['Key Ingredients'] ? `<div style="font-size:0.74rem;color:#cbd5e1;margin-top:0.18rem;">Actives: ${this.escapeHtml(specs['Key Ingredients'])}</div>` : '');
       return `
@@ -2299,8 +2298,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         <td style="font-weight:700;color:#94a3b8;font-variant-numeric:tabular-nums;">#${idx + 1}</td>
         <td>
           <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;text-decoration:none;display:block;">${this.escapeHtml(d.title)}</a>
-          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${unitInfo.pricePerMlLabel ? ` &bull; <strong style="color:#67e8f9;">${this.escapeHtml(unitInfo.pricePerMlLabel)}</strong>` : ''}${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
-          ${laptopSpecsHtml}
+          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${!isLaptopRow && unitInfo.pricePerMlLabel ? ` &bull; <strong style="color:#67e8f9;">${this.escapeHtml(unitInfo.pricePerMlLabel)}</strong>` : ''}${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
+          ${rowSpecsHtml}
           ${observedAt ? `<div style="font-size:0.74rem;color:#64748b;margin-top:0.15rem;">Checked ${this.escapeHtml(observedAt)}</div>` : ''}
         </td>
         <td style="font-variant-numeric:tabular-nums;">

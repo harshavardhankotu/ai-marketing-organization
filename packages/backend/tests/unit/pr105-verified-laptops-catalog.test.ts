@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { app, resetSitemapCacheForTesting } from '../../src/index.js';
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
-import { createHighIntentStarterDeals, createVerifiedLiveLaptops } from '../../src/commission/starter-deals.js';
+import { createHighIntentStarterDeals, createVerifiedLiveLaptops, LAPTOP_SEED_PRICE_VERIFIED_AT } from '../../src/commission/starter-deals.js';
 import { StaticSiteGenerator, generateBuyerIntentHubs } from '../../src/commission/static-site-generator.js';
 import { InstagramBusinessAdapter } from '../../src/integrations/instagram-business-adapter.js';
 import { getDb } from '../../src/db/client.js';
@@ -289,6 +289,101 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
       expect(pubRes.rejected.length).toBe(0);
       const publishedLaptops = pubRes.deals.filter(d => d.campaignId === '4360');
       expect(publishedLaptops.length).toBe(5);
+    } finally {
+      chanSpy.mockRestore();
+      probeSpy.mockRestore();
+      convSpy.mockRestore();
+      persistSpy.mockRestore();
+      offerSpy.mockRestore();
+    }
+  });
+
+  it('refreshes stock timestamps when probe is IN_STOCK with omitted price, routes "beginner laptop under 60000" to laptops, and formats mixed hubs per-row', async () => {
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const starterDeals = createHighIntentStarterDeals();
+    for (const d of starterDeals) {
+      (engine as any).dealsMap.set(d.id, d);
+    }
+
+    // 1. "beginner coding laptop under 60000" must stay strictly in laptop mode (no skincare leakage)
+    const begRes = await app.request('/api/v1/public/fair-price-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        queryOrUrl: 'beginner coding laptop under 60000',
+        skipAiSynthesis: true
+      })
+    });
+    expect(begRes.status).toBe(200);
+    const begJson = (await begRes.json()) as any;
+    expect(begJson.data.recommendations.length).toBeGreaterThanOrEqual(2);
+    for (const card of begJson.data.recommendations) {
+      expect(card.title).toMatch(/Acer/i);
+      expect(card.title).not.toMatch(/serum|niacinamide|asaya|plum|kama|dot & key/i);
+      expect(card.pricePerMlINR).toBeNull();
+    }
+
+    // 2. Mixed-product hub formats skincare rows with Actives/₹/ml and laptop rows with hardware specs
+    const serum = starterDeals.find(d => d.subCategory === 'face-serum')!;
+    const laptop = starterDeals.find(d => d.subCategory === 'laptop')!;
+    const ssg = StaticSiteGenerator.getInstance();
+    const mixedHubHtml = ssg.renderBuyerGuideHtml(
+      {
+        intentSlug: 'top-price-drops-today-india',
+        title: 'Top Price Drops Today',
+        h1: 'Top Price Drops Today',
+        description: 'Mixed category test hub',
+        priceCapLabel: 'All Tiers',
+        categoryLabel: 'Mixed',
+        deals: [serum, laptop],
+        picks: { bestOverallValue: serum, lowestObservedPrice: laptop, premiumPick: null },
+        faqs: []
+      },
+      [],
+      [],
+      { siteName: 'AI Marketing Organization', authorName: 'Desk', contactEmail: 'desk@example.com', siteUrl: 'https://ai-marketing-organization.onrender.com' }
+    );
+    expect(mixedHubHtml).toContain('Actives:');
+    expect(mixedHubHtml).toContain('Processor: AMD Ryzen 5 7430U');
+    expect(mixedHubHtml).toContain('Weight: 1.59 kg');
+
+    // 3. Confirmed IN_STOCK probe with omitted price (priceINR: 0) still refreshes freshness timestamps
+    const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+    const { CuelinksV3Client } = await import('../../src/commission/cuelinks-v3-client.js');
+    const { CommercialOpportunitySelector } = await import('../../src/commission/commercial-opportunity-selector.js');
+
+    const chanSpy = vi.spyOn(CuelinksSyncManager.prototype, 'getApprovedChannel').mockResolvedValue({
+      approved: true,
+      channel: { id: 331585, name: 'Channel 331585', approval_status: 'approved' }
+    } as any);
+    const probeSpy = vi.spyOn(CommercialOpportunitySelector.prototype, 'probeMerchantProduct').mockResolvedValue({
+      probed: true,
+      available: true,
+      status: 'IN_STOCK',
+      priceINR: 0
+    } as any);
+    const convSpy = vi.spyOn(CuelinksV3Client.prototype, 'convertLink').mockImplementation(async (params: any) => {
+      const u = String(params?.url || '');
+      const campId = u.includes('store.acer.com') ? '4360' : (u.includes('worldofasaya') ? '6458' : (u.includes('plumgoodness') ? '4098' : (u.includes('dotandkey') ? '4879' : '4161')));
+      return {
+        affiliated: true,
+        tracking_url: `https://linksredirect.com/?cid=331585&url=${encodeURIComponent(u)}`,
+        campaign: { id: campId }
+      } as any;
+    });
+    const persistedDeals: any[] = [];
+    const persistSpy = vi.spyOn(engine as any, 'persistDealToD1').mockImplementation(async (d: any) => {
+      persistedDeals.push(d);
+    });
+    const offerSpy = vi.spyOn(engine as any, 'provisionMatchingPartnerOffer').mockResolvedValue(undefined);
+
+    try {
+      const res = await engine.publishVerifiedSkincareCatalog('org_owner_primary', 'biz_platform_aro');
+      expect(res.publishedCount).toBe(11);
+      const publishedLaptop = persistedDeals.find(d => d.subCategory === 'laptop');
+      expect(publishedLaptop).toBeDefined();
+      expect(publishedLaptop.lastCheckedAt).not.toBe(LAPTOP_SEED_PRICE_VERIFIED_AT);
+      expect(publishedLaptop.lastVerifiedAt).not.toBe(LAPTOP_SEED_PRICE_VERIFIED_AT);
     } finally {
       chanSpy.mockRestore();
       probeSpy.mockRestore();

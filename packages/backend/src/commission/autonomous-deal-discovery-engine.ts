@@ -6435,16 +6435,16 @@ export class AutonomousDealDiscoveryEngine {
           });
           continue;
         }
+        const observedNow = new Date().toISOString();
+        deal.observedAt = observedNow;
+        deal.lastCheckedAt = observedNow;
+        deal.lastVerifiedAt = observedNow;
+        deal.updatedAt = observedNow;
         if (probe.priceINR && probe.priceINR > 0) {
           deal.currentPriceINR = probe.priceINR;
           if (deal.unitVolumeMl && deal.unitVolumeMl > 0) {
             deal.pricePerMlINR = Number((probe.priceINR / deal.unitVolumeMl).toFixed(2));
           }
-          const observedNow = new Date().toISOString();
-          deal.observedAt = observedNow;
-          deal.lastCheckedAt = observedNow;
-          deal.lastVerifiedAt = observedNow;
-          deal.updatedAt = observedNow;
         }
 
         const convRes = await cuelinksClient.convertLink({
@@ -8702,13 +8702,18 @@ export class AutonomousDealDiscoveryEngine {
       avoidIngredients.some(a => a === 'fragrance' || a.includes('fragrance')) ||
       /(?:fragrance[\s-]?free|avoid\s+fragrance|no\s+fragrance|without\s+fragrance)/i.test(rawSearchString);
     const wantsLightweight = /(?:lightweight|non[\s-]?greasy|non[\s-]?sticky|water[\s-]?light)/i.test(rawSearchString);
-    const skinTypePref = (input.preferences?.skinType || (rawSearchString.match(/\b(oily|combination|dry|sensitive|beginner)\b/i)?.[1] || '')).trim().toLowerCase();
+    const isLaptopQuery = /\b(laptop|laptops|notebook|ultrabook|coding|programming|ram|ssd|ryzen|intel|core\s*i[357]|core\s*ultra)\b/i.test(rawSearchString);
+    const hasExplicitSkincareTerms = /\b(serum|skincare|skin\s*type|niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|pore|acne|fragrance)\b/i.test(rawSearchString);
+    const skinTypeMatch = rawSearchString.match(/\b(oily|combination|dry|sensitive|beginner)\b/i)?.[1] || '';
+    const skinTypePref = (
+      input.preferences?.skinType ||
+      (isLaptopQuery && !hasExplicitSkincareTerms && skinTypeMatch.toLowerCase() === 'beginner' ? '' : skinTypeMatch)
+    ).trim().toLowerCase();
     const activePref = (input.preferences?.activeIngredient || (rawSearchString.match(/\b(niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|saffron)\b/i)?.[1] || '')).trim().toLowerCase();
     const prioritizeLowestPricePerMl = Boolean(input.preferences?.prioritizeLowestPricePerMl) ||
       /(?:₹\/ml|per\s*ml|best\s*value|cheapest\s*per\s*ml)/i.test(rawSearchString);
-    const isLaptopQuery = /\b(laptop|laptops|notebook|ultrabook|coding|programming|ram|ssd|ryzen|intel|core\s*i[357]|core\s*ultra)\b/i.test(rawSearchString);
-    const isSkincareQuery = Boolean(activePref || skinTypePref || wantsFragranceFree) ||
-      /\b(serum|skincare|niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|pore|acne|fragrance)\b/i.test(rawSearchString);
+    const isSkincareQuery = Boolean(input.preferences?.skinType || activePref || wantsFragranceFree || hasExplicitSkincareTerms) ||
+      Boolean(skinTypePref && (!isLaptopQuery || hasExplicitSkincareTerms));
     const requestedRamMatch = rawSearchString.match(/\b(8|16|32)\s*gb(?:\s*ram)?\b/i);
     const requestedRamGb = requestedRamMatch ? Number(requestedRamMatch[1]) : null;
     const requestedSsdMatch = rawSearchString.match(/\b(256|512)\s*gb\s*ssd\b|\b(1)\s*tb\s*ssd\b/i);
