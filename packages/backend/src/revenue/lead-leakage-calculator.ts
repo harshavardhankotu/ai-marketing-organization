@@ -289,7 +289,7 @@ export class LeadLeakageCalculator {
   <title>Inbound Lead Leakage Calculator | ${siteName}</title>
   <meta name="description" content="Free audit tool for local businesses in India: Estimate potential inquiry loss from after-hours response delays. 100% free, private, no signup required.">
   <link rel="canonical" href="${siteUrl}/tools/lead-leakage-calculator">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="noindex, nofollow">
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; --muted: #94a3b8; }
     * { box-sizing: border-box; margin: 0; padding: 0; }

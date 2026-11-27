@@ -410,6 +410,7 @@ describe('Stage R & R.1 — Payment Attribution, Separate Fulfillment Machine, F
         referencePriceINR: 29990,
         productUrl: 'https://cuelinks.com/exclusive-deal',
         affiliateNetwork: 'CUELINKS',
+        socialMediaPublishersAllowed: true,
         youtubeReview: {
           videoId: 'abc123xyz',
           title: 'Sony WH-1000XM5 In-Depth Review',

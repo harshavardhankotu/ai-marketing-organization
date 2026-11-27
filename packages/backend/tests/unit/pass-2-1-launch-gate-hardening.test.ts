@@ -539,7 +539,7 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
       ];
 
       for (const toolPath of ownerToolPaths) {
-        expect(xml).toContain(`<loc>https://ai-marketing-organization.onrender.com${toolPath}</loc>`);
+        expect(xml).not.toContain(`<loc>https://ai-marketing-organization.onrender.com${toolPath}</loc>`);
         const pageRes = await app.request(toolPath);
         expect(pageRes.status, `${toolPath} must return HTTP 200`).toBe(200);
       }

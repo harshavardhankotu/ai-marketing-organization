@@ -315,13 +315,13 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(res.status).toBe(200);
       const text = await res.text();
 
-      // Must include primary SSR canonical URLs
+      // Must include primary consumer SSR canonical URLs and exclude legacy B2B/tools routes
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/</loc>');
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/deals</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/offer</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/tools/site-audit</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/tools/lead-leakage-calculator</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/revenue</loc>');
+      expect(text).not.toContain('<loc>https://ai-marketing-organization.onrender.com/offer</loc>');
+      expect(text).not.toContain('<loc>https://ai-marketing-organization.onrender.com/tools/site-audit</loc>');
+      expect(text).not.toContain('<loc>https://ai-marketing-organization.onrender.com/tools/lead-leakage-calculator</loc>');
+      expect(text).not.toContain('<loc>https://ai-marketing-organization.onrender.com/revenue</loc>');
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/public/disclosure</loc>');
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/guides/best-wireless-audio-smartwatches-india</loc>');
       // Unverified/nonexistent slugs must never appear in sitemap.xml
@@ -476,16 +476,14 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
   // WORKSTREAM E: Homepage Focused B2B Positioning + Segregated /deals & /tools
   // --------------------------------------------------------------------------
   describe('Workstream E — Homepage B2B Focus & Legal Hygiene', () => {
-    it('renders focused Website Enquiry Path Repair storefront on GET / with /demo CTA and zero clinic/leaked copy', async () => {
+    it('renders focused AI Buying Assistant storefront on GET / with /deals CTA and zero clinic/leaked copy', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
-      expect(html).toContain('Founding Pilot');
-      expect(html).toContain('₹1,999');
-      expect(html).toContain('href="/demo"');
-      expect(html).toContain('href="/offer"');
+      expect(html).toContain('AI Buying Assistant');
+      expect(html).toContain('#Affiliate');
+      expect(html).toContain('href="/deals"');
       expect(html).toContain('href="/terms"');
       expect(html).toContain('href="/privacy"');
       expect(html).toContain('href="/refund"');
@@ -1367,7 +1365,7 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       const sitemapRes = await app.request('/sitemap.xml');
       expect(sitemapRes.status).toBe(200);
       const sitemapXml = await sitemapRes.text();
-      expect(sitemapXml).toContain('/tools/financial-radar');
+      expect(sitemapXml).not.toContain('/tools/financial-radar');
     });
 
     it('Stage I.2 (P0–P6): enforces anti-impersonation provenance, clarification, server-authoritative checkout, verified fulfillment bridge, retry/DLQ, honest DIRECT_UPI, and Concierge widget', async () => {
@@ -1579,16 +1577,16 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       const dlqDigest = await OwnerDigestService.getInstance().generateDigestAsync();
       expect(dlqDigest.arosControlCenter?.scheduledExecutionTruth?.deadLetterEventsCount).toBe(1);
 
-      // P6: Concierge widget present on B2B routes (/, /tools/site-audit) and intentionally removed from consumer /deals
-      for (const routePath of ['/', '/tools/site-audit']) {
-        const htmlRes = await app.request(routePath);
-        expect(htmlRes.status).toBe(200);
-        const bodyHtml = await htmlRes.text();
-        expect(bodyHtml).toContain('aros-desk-root');
-        expect(bodyHtml).toContain('/api/v1/customer-desk/message');
+      // P6: Concierge widget present on legacy B2B route (/tools/site-audit) and intentionally removed from consumer / and /deals
+      const auditHtmlRes = await app.request('/tools/site-audit');
+      expect(auditHtmlRes.status).toBe(200);
+      const auditBodyHtml = await auditHtmlRes.text();
+      expect(auditBodyHtml).toContain('aros-desk-root');
+      expect(auditBodyHtml).toContain('/api/v1/customer-desk/message');
+      for (const consumerRoute of ['/', '/deals']) {
+        const consumerHtml = await (await app.request(consumerRoute)).text();
+        expect(consumerHtml).not.toContain('aros-desk-root');
       }
-      const dealsRouteHtml = await (await app.request('/deals')).text();
-      expect(dealsRouteHtml).not.toContain('aros-desk-root');
     });
 
     it('Stage I.2-A: enforces private tokenised audits, authoritative pricing/UPI env gates, durable emit status, and honest price-history HTML', async () => {

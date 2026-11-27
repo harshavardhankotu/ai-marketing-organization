@@ -44,7 +44,7 @@ describe('Owner Attestation Gate & Offer Truth (mst_p1_agent_set_owner_attestati
 
     // Must render non-payable Founding Pilot overview with owner-attestation notice
     expect(html).toContain('Configuration Pending Owner Attestation');
-    expect(html).toContain('index, follow');
+    expect(html).toContain('noindex');
     expect(html).toContain('Website Enquiry Path Repair');
     expect(html).toContain('Pilot Scope &amp; Verification Policy');
     expect(html).toContain('/demo');

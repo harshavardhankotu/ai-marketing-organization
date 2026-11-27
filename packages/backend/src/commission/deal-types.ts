@@ -188,7 +188,7 @@ export interface NormalizedDeal {
   measuredApprovedOrders?: number;
   measuredCommissionINR?: number;
   modelledIllustrativeEvPer100VisitorsINR?: number;
-  socialMediaPublishersAllowed?: boolean;
+  socialMediaPublishersAllowed?: boolean | 'UNKNOWN';
   expectedProfitPer100VisitorsINR?: number;
   staleDecayPenalty?: number;
   rankingBreakdown?: {

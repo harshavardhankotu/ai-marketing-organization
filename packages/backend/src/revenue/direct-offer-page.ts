@@ -306,27 +306,49 @@ export class DirectCommercialOfferPage {
       googleCode ? `  <meta name="google-site-verification" content="${escapeMetaAttr(googleCode)}" />` : ''
     ].filter(Boolean).join('\n');
 
-    const pageTitle = `Website Enquiry Path Repair for Training Institutes | ${escapeHtmlText(siteName)}`;
-    const pageDesc = 'Founder-led Website Enquiry Path Repair for coaching and training institutes in Hyderabad and India. Fix broken mobile enquiry forms, add WhatsApp click-to-chat, and set up structured lead tracking. Founding Pilot ₹1,999.';
+    const pageTitle = `AI Buying Assistant — Verified Skincare & Fair-Price Picks | ${escapeHtmlText(siteName)}`;
+    const pageDesc = 'Preference-based AI Buying Assistant that matches verified Indian products to your budget, ingredients, and ₹/ml unit cost with honest trade-offs and #Affiliate disclosure.';
+    const featuredDeals = Array.isArray(config.featuredDeals) ? config.featuredDeals.slice(0, 4) : [];
+    const ctaText = config.dealCtaAssignment?.ctaText || 'Buy at Official Store (#Affiliate) →';
     const jsonLd = JSON.stringify({
       '@context': 'https://schema.org',
-      '@type': 'ProfessionalService',
+      '@type': 'WebSite',
       name: siteName,
       url: `${siteUrl}/`,
-      description: pageDesc,
-      areaServed: {
-        '@type': 'City',
-        name: 'Hyderabad'
-      },
-      ...(contactEmail ? { email: contactEmail } : {}),
-      offers: {
-        '@type': 'Offer',
-        name: 'Founding Pilot — Website Enquiry Path Repair for Training Institutes',
-        price: '1999',
-        priceCurrency: 'INR',
-        url: `${siteUrl}/offer`
-      }
+      description: pageDesc
     }).replace(/</g, '\\u003c');
+
+    const featuredCardsHtml = featuredDeals.map((d: any) => {
+      const price = Number(d.currentPriceINR || 0);
+      const ml = Number(d.unitVolumeMl ?? d.evidenceJson?.unitVolumeMl ?? 0);
+      const perMl = Number(d.pricePerMlINR ?? d.evidenceJson?.pricePerMlINR ?? (ml > 0 && price > 0 ? Number((price / ml).toFixed(2)) : 0));
+      const slug = d.slug || d.canonicalSlug || d.id;
+      const detailUrl = `/deals/${encodeURIComponent(slug)}`;
+      const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=homepage_featured`;
+      const frag = d.evidenceJson?.rawSpecs?.['Fragrance Profile'] || '';
+      const actives = d.evidenceJson?.rawSpecs?.['Key Ingredients'] || '';
+      return `
+        <article class="feature-item" style="display:flex;flex-direction:column;justify-content:space-between;gap:0.65rem;">
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.35rem;">
+              <span style="font-size:0.74rem;font-weight:700;color:#38bdf8;text-transform:uppercase;">${escapeHtmlText(d.brand || d.merchant || 'Verified Brand')}</span>
+              <span style="font-size:0.72rem;color:#94a3b8;">#Affiliate &bull; #Ad</span>
+            </div>
+            <h3 style="font-size:0.98rem;line-height:1.35;margin-bottom:0.35rem;"><a href="${escapeMetaAttr(detailUrl)}" style="color:#f8fafc;text-decoration:none;">${escapeHtmlText(d.title || '')}</a></h3>
+            <div style="display:flex;gap:0.45rem;flex-wrap:wrap;align-items:baseline;margin-bottom:0.4rem;">
+              <span style="font-size:1.25rem;font-weight:800;color:#fff;">₹${price.toLocaleString('en-IN')}</span>
+              ${ml > 0 ? `<span style="font-size:0.75rem;color:#cbd5e1;background:#111827;border:1px solid #334155;padding:0.12rem 0.45rem;border-radius:6px;">${ml} ml</span>` : ''}
+              ${perMl > 0 ? `<span style="font-size:0.75rem;color:#67e8f9;background:rgba(6,182,212,0.12);border:1px solid rgba(6,182,212,0.35);padding:0.12rem 0.45rem;border-radius:6px;">₹${perMl.toFixed(2)}/ml</span>` : ''}
+            </div>
+            ${actives ? `<p style="font-size:0.78rem;color:#cbd5e1;margin-bottom:0.25rem;"><strong>Actives:</strong> ${escapeHtmlText(actives)}</p>` : ''}
+            ${frag ? `<p style="font-size:0.76rem;color:#94a3b8;"><strong>Fragrance:</strong> ${escapeHtmlText(frag)}</p>` : ''}
+          </div>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;padding-top:0.5rem;border-top:1px solid #1e293b;">
+            <a href="${escapeMetaAttr(redirectUrl)}" target="_blank" rel="sponsored noopener noreferrer" class="btn btn-primary" style="flex:1 1 160px;padding:0.5rem 0.75rem;font-size:0.8rem;">${escapeHtmlText(ctaText)}</a>
+            <a href="${escapeMetaAttr(detailUrl)}" class="btn btn-secondary" style="padding:0.5rem 0.75rem;font-size:0.78rem;">Specs &amp; Reviews</a>
+          </div>
+        </article>`;
+    }).join('');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -496,117 +518,95 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
   <nav class="top-nav" aria-label="Primary Navigation">
     <a href="/" class="brand">${escapeHtmlText(siteName)}</a>
     <div class="nav-links">
-      <a href="/" class="active">Home</a>
-      <a href="/demo">Live Demo</a>
-      <a href="/offer">Founding Pilot</a>
+      <a href="/" class="active">AI Assistant</a>
+      <a href="/deals">Verified Deals</a>
+      <a href="/disclosure">Disclosure</a>
       <a href="/contact">Contact</a>
     </div>
   </nav>
 
   <main class="container">
     <header class="hero">
-      <div class="status-badge">Hyderabad &bull; Founder-Led B2B Service</div>
-      <h1>Website Enquiry Path Repair for Training Institutes</h1>
+      <div class="status-badge">#Affiliate &bull; #Ad &bull; Preference-Based AI Buying Assistant</div>
+      <h1>Match Verified Skincare Deals to Your Budget &amp; Needs</h1>
       <p class="subtitle">
-        Stop losing mobile student admissions enquiries to broken forms, slow phone-only contact pages, and missed WhatsApp follow-ups. See a live working repair flow before you commit.
+        Tell us your budget, skin type, active ingredients, and what to avoid. We compare verified Indian D2C listings by fit and ₹/ml unit cost with honest trade-offs — never ranked by commission.
       </p>
-      <div class="cta-group">
-        <a href="/demo" class="btn btn-primary">Try Live Interactive Demo &rarr;</a>
-        <a href="#founding-pilot" class="btn btn-secondary">Founding Pilot &bull; ₹1,999</a>
-        <a href="#pilot-enquiry" class="btn btn-secondary">Request Pilot Setup</a>
-      </div>
     </header>
 
-    <section class="card" aria-labelledby="scope-heading">
-      <h2 id="scope-heading">Transparent Done-For-You Scope</h2>
-      <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1rem;">
-        Built for coaching centers and skill academies whose mobile visitors bounce before submitting a course enquiry.
-      </p>
-      <div class="grid-2">
-        <div class="feature-item">
-          <h3>1. Mobile-First Enquiry Form (390&times;844)</h3>
-          <p>Fix overflowing mobile layouts and broken submission flows so prospective students can enquire in under 30 seconds from any phone.</p>
-        </div>
-        <div class="feature-item">
-          <h3>2. Direct WhatsApp Click-to-Chat</h3>
-          <p>Pre-filled <code>wa.me</code> course enquiry button routed straight to your official institute WhatsApp number with zero recurring software fees.</p>
-        </div>
-        <div class="feature-item">
-          <h3>3. Structured Lead Tracker</h3>
-          <p>Every enquiry lands in a clean tracker (<code>New &rarr; Contacted &rarr; Demo Scheduled &rarr; Enrolled</code>) with owner alert &amp; manual follow-up workflow configured for your institute&apos;s channel.</p>
-        </div>
-        <div class="feature-item">
-          <h3>4. Clean SEO &amp; Schema Metadata</h3>
-          <p>Verified <code>&lt;title&gt;</code>, meta description, canonical URL, Open Graph preview, and <code>EducationalOrganization</code> JSON-LD.</p>
-        </div>
+    <section class="card" id="ai-shopping-assistant" aria-labelledby="assistant-heading">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.65rem;">
+        <h2 id="assistant-heading" style="margin:0;">AI Shopping Assistant</h2>
+        <span class="price-pill">#Affiliate Disclosure: Qualifying links may earn a commission</span>
       </div>
-    </section>
-
-    <section class="card" id="founding-pilot" style="border-color: rgba(6, 182, 212, 0.45); background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.85rem;">
-        <h2 style="margin: 0;">Founding Pilot &mdash; ₹1,999 Total</h2>
-        <span class="price-pill">₹999 Advance + ₹1,000 After Live Handover</span>
-      </div>
-      <p style="color: #cbd5e1; font-size: 0.93rem; margin-bottom: 1rem;">
-        Honest milestone billing: pay <strong>₹999</strong> advance to kick off implementation, inspect your live working mobile enquiry path, and pay the remaining <strong>₹1,000</strong> only after live handover. Includes a <strong>7-day post-handover bug-fix window</strong>.
+      <p style="color:#94a3b8;font-size:0.88rem;margin-bottom:1rem;">
+        Enter a plain-English request or set your filters below to get up to 3 grounded picks: Best Match, Best Value (₹/ml), and Alternative Choice.
       </p>
-      <ul style="color: #94a3b8; font-size: 0.86rem; padding-left: 1.2rem; margin-bottom: 1.15rem; display: grid; gap: 0.35rem;">
-        <li>Founder-operated in Hyderabad — direct 1:1 execution without agency hand-offs.</li>
-        <li>No fabricated testimonials, no fake client logos, and no guaranteed admission counts.</li>
-        <li>Test the exact deliverables yourself right now on the interactive <a href="/demo" style="color: #38bdf8; font-weight: 600;">/demo page</a>.</li>
-      </ul>
-      <div class="cta-group">
-        <a href="/demo" class="btn btn-primary">Explore Interactive /demo &rarr;</a>
-        <a href="/offer" class="btn btn-secondary">View Full Founding Pilot Details</a>
-      </div>
-    </section>
-
-    <section class="card" id="pilot-enquiry" aria-labelledby="enquiry-heading">
-      <h2 id="enquiry-heading">Request a Founding Pilot Walkthrough</h2>
-      <p style="color: #94a3b8; font-size: 0.88rem; margin-bottom: 1rem;">
-        Share your institute website or city and we will respond directly with a concrete fix checklist for your enquiry path.
-      </p>
-      <form onsubmit="handlePilotEnquiry(event)" style="display: grid; gap: 0.85rem;">
-        <div class="form-grid">
-          <div>
-            <label for="b2b-name">Your Name *</label>
-            <input id="b2b-name" type="text" required maxlength="100" placeholder="e.g. Kiran Reddy">
-          </div>
-          <div>
-            <label for="b2b-phone">WhatsApp / Mobile Number *</label>
-            <input id="b2b-phone" type="tel" required maxlength="20" placeholder="e.g. 9849012345">
-          </div>
+      <form onsubmit="handleAssistantQuery(event)" style="display:grid;gap:0.85rem;">
+        <div>
+          <label for="assistant-query">What are you looking for? *</label>
+          <input id="assistant-query" type="text" required maxlength="300" placeholder="e.g. niacinamide serum under 800, oily skin, avoid fragrance" value="niacinamide serum under 800, oily skin, avoid fragrance">
         </div>
         <div class="form-grid">
           <div>
-            <label for="b2b-institute">Training Institute &amp; City *</label>
-            <input id="b2b-institute" type="text" required maxlength="140" placeholder="e.g. Pragati Coaching Academy, Hyderabad">
+            <label for="assistant-budget">Max Budget (₹)</label>
+            <input id="assistant-budget" type="number" min="100" max="50000" placeholder="e.g. 800">
           </div>
           <div>
-            <label for="b2b-email">Email Address (Optional)</label>
-            <input id="b2b-email" type="email" maxlength="120" placeholder="founder@institute.in">
+            <label for="assistant-skin">Skin Type / Need</label>
+            <select id="assistant-skin" style="width:100%;background:#090d16;border:1px solid #334155;border-radius:8px;padding:0.62rem 0.75rem;color:#fff;font-size:0.88rem;">
+              <option value="">Any skin type</option>
+              <option value="oily">Oily / Combination</option>
+              <option value="dry">Dry / Dull</option>
+              <option value="sensitive">Sensitive</option>
+              <option value="beginner">Beginner</option>
+            </select>
+          </div>
+          <div>
+            <label for="assistant-active">Key Active Ingredient</label>
+            <select id="assistant-active" style="width:100%;background:#090d16;border:1px solid #334155;border-radius:8px;padding:0.62rem 0.75rem;color:#fff;font-size:0.88rem;">
+              <option value="">Any active</option>
+              <option value="niacinamide">Niacinamide</option>
+              <option value="vitamin c">Vitamin C</option>
+              <option value="alpha arbutin">Alpha Arbutin</option>
+              <option value="kumkumadi">Kumkumadi / Saffron</option>
+            </select>
           </div>
         </div>
-        <div>
-          <label for="b2b-notes">Website URL or Enquiry Issue</label>
-          <textarea id="b2b-notes" rows="2" maxlength="500" placeholder="e.g. https://ourinstitute.in — mobile enquiry button is hard to reach"></textarea>
+        <div style="display:flex;gap:1.1rem;flex-wrap:wrap;align-items:center;">
+          <label style="display:flex;align-items:center;gap:0.4rem;font-weight:500;font-size:0.84rem;color:#cbd5e1;cursor:pointer;margin:0;">
+            <input id="assistant-fragrance-free" type="checkbox"> Avoid added fragrance
+          </label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-weight:500;font-size:0.84rem;color:#cbd5e1;cursor:pointer;margin:0;">
+            <input id="assistant-lowest-ml" type="checkbox"> Prioritize lowest ₹/ml
+          </label>
         </div>
-        <input type="text" id="b2b-trap" name="website_trap" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px;width:1px;height:1px;" aria-hidden="true">
-        <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-weight: 400; font-size: 0.82rem; color: #cbd5e1; cursor: pointer;">
-          <input type="checkbox" id="b2b-consent" required style="margin-top: 0.2rem;">
-          <span>I agree to be contacted regarding this Founding Pilot enquiry in accordance with the <a href="/privacy" style="color: #38bdf8;">Privacy Policy</a>.</span>
-        </label>
-        <div>
-          <button type="submit" id="b2b-submit" class="btn btn-primary">Send Pilot Enquiry &rarr;</button>
+        <div class="cta-group">
+          <button type="submit" id="assistant-submit" class="btn btn-primary">Find Best Matches &rarr;</button>
+          <a href="/deals" class="btn btn-secondary">Browse All Verified Deals</a>
         </div>
-        <div id="b2b-status" style="font-size: 0.85rem;"></div>
       </form>
+      <div id="assistant-results" style="display:none;margin-top:1.25rem;"></div>
     </section>
+
+    ${featuredDeals.length > 0 ? `
+    <section class="card" aria-labelledby="featured-heading">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.9rem;">
+        <h2 id="featured-heading" style="margin:0;">Live Verified Skincare Serums (₹/ml Compared)</h2>
+        <a href="/deals" style="color:#38bdf8;font-size:0.85rem;font-weight:600;text-decoration:none;">View all verified deals &rarr;</a>
+      </div>
+      <div class="grid-2">
+        ${featuredCardsHtml}
+      </div>
+    </section>` : ''}
   </main>
 
   <footer>
-    <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)} &bull; Hyderabad, India</p>
+    <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)} &bull; #Affiliate Disclosure: Outgoing store links may earn a commission at zero extra cost to you.</p>
     <p style="margin-top: 0.6rem;">
+      <a href="/">AI Assistant</a> &bull;
+      <a href="/deals">Verified Deals</a> &bull;
+      <a href="/disclosure">Affiliate Disclosure</a> &bull;
       <a href="/terms">Terms</a> &bull;
       <a href="/privacy">Privacy Policy</a> &bull;
       <a href="/refund">Refund Policy</a> &bull;
@@ -615,48 +615,116 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
   </footer>
 
   <script>
-    async function handlePilotEnquiry(e) {
-      e.preventDefault();
-      var btn = document.getElementById('b2b-submit');
-      var statusEl = document.getElementById('b2b-status');
-      var payload = {
-        customerName: (document.getElementById('b2b-name') || {}).value || '',
-        customerPhone: (document.getElementById('b2b-phone') || {}).value || '',
-        serviceOfInterest: (document.getElementById('b2b-institute') || {}).value || '',
-        customerEmail: (document.getElementById('b2b-email') || {}).value || '',
-        notes: (document.getElementById('b2b-notes') || {}).value || '',
-        website_trap: (document.getElementById('b2b-trap') || {}).value || '',
-        consentGiven: Boolean((document.getElementById('b2b-consent') || {}).checked),
-        source: 'homepage_b2b_inquiry',
-        channel: 'WHATSAPP'
-      };
-      if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
-      if (statusEl) { statusEl.style.color = '#94a3b8'; statusEl.textContent = 'Recording your enquiry...'; }
+    function escHtml(s) {
+      return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function trackRecClick(dealId, slot) {
       try {
-        var res = await fetch('/api/v1/offer/inquiry', {
+        var payload = JSON.stringify({ event: 'recommendation_click', path: '/', dealId: dealId, slot: slot });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/v1/public/shopping-event', new Blob([payload], { type: 'application/json' }));
+        } else {
+          fetch('/api/v1/public/shopping-event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(function(){});
+        }
+      } catch (e) {}
+    }
+    async function handleAssistantQuery(e) {
+      e.preventDefault();
+      var q = (document.getElementById('assistant-query') || {}).value || '';
+      var budgetVal = Number((document.getElementById('assistant-budget') || {}).value || 0);
+      var skinVal = (document.getElementById('assistant-skin') || {}).value || '';
+      var activeVal = (document.getElementById('assistant-active') || {}).value || '';
+      var fragFree = Boolean((document.getElementById('assistant-fragrance-free') || {}).checked);
+      var lowestMl = Boolean((document.getElementById('assistant-lowest-ml') || {}).checked);
+      var btn = document.getElementById('assistant-submit');
+      var out = document.getElementById('assistant-results');
+      if (!q.trim() || !out) return;
+      if (btn) { btn.disabled = true; btn.textContent = 'Analyzing fit & trade-offs...'; }
+      out.style.display = 'block';
+      out.innerHTML = '<div style="font-size:0.88rem;color:#94a3b8;">Matching verified products to your preferences...</div>';
+      try {
+        var res = await fetch('/api/v1/public/fair-price-check', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({
+            queryOrUrl: q.trim(),
+            preferences: {
+              maxBudgetINR: budgetVal > 0 ? budgetVal : undefined,
+              skinType: skinVal || undefined,
+              activeIngredient: activeVal || undefined,
+              fragranceFree: fragFree,
+              prioritizeLowestPricePerMl: lowestMl
+            }
+          })
         });
-        var data = await res.json();
-        if (!res.ok || !data.success) {
-          throw new Error(data.error || data.message || 'Submission failed');
-        }
-        if (statusEl) {
-          statusEl.style.color = '#34d399';
-          statusEl.textContent = data.message || 'Enquiry recorded. We will follow up directly.';
-        }
+        var json = await res.json();
+        if (!res.ok || !json.success) throw new Error(json.message || json.error || 'Request failed');
+        var d = json.data;
+        var recs = Array.isArray(d.recommendations) ? d.recommendations : [];
+        var cardsHtml = recs.map(function(r) {
+          var badgeBg = r.slot === 'BEST_MATCH' ? 'rgba(16,185,129,0.16);color:#34d399;border-color:rgba(16,185,129,0.4)' : (r.slot === 'BEST_VALUE' ? 'rgba(6,182,212,0.16);color:#38bdf8;border-color:rgba(6,182,212,0.4)' : 'rgba(148,163,184,0.16);color:#cbd5e1;border-color:rgba(148,163,184,0.35)');
+          var unverifiedHtml = (r.unverifiedRequirements && r.unverifiedRequirements.length > 0)
+            ? '<div style="margin-top:0.45rem;font-size:0.78rem;color:#fbbf24;"><strong>Note:</strong> ' + escHtml(r.unverifiedRequirements.join(' ')) + '</div>'
+            : '';
+          var ytHtml = (r.youtubeReviews && r.youtubeReviews.length > 0)
+            ? '<div style="margin-top:0.5rem;font-size:0.78rem;color:#38bdf8;">Creator review: ' + r.youtubeReviews.map(function(v) {
+                return '<a href="' + escHtml(v.videoUrl) + '" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:underline;">' + escHtml(v.title) + '</a>';
+              }).join(' · ') + '</div>'
+            : '';
+          var couponHtml = r.couponCode
+            ? '<div style="font-size:0.76rem;color:#34d399;margin-bottom:0.45rem;">Coupon: <strong>' + escHtml(r.couponCode) + '</strong>' + (r.couponConditions ? ' (' + escHtml(r.couponConditions) + ')' : '') + '</div>'
+            : '';
+          return '<article class="feature-item" style="display:flex;flex-direction:column;justify-content:space-between;gap:0.65rem;">' +
+            '<div>' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.45rem;">' +
+                '<span style="font-size:0.74rem;font-weight:700;padding:0.2rem 0.55rem;border-radius:999px;border:1px solid;background:' + badgeBg + ';">' + escHtml(r.slotLabel) + '</span>' +
+                '<span style="font-size:0.72rem;color:#94a3b8;">#Affiliate</span>' +
+              '</div>' +
+              '<h3 style="font-size:0.98rem;color:#fff;margin-bottom:0.35rem;">' + escHtml(r.title) + '</h3>' +
+              '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:baseline;margin-bottom:0.5rem;">' +
+                '<span style="font-size:1.25rem;font-weight:800;color:#fff;">₹' + Number(r.effectivePriceINR || r.currentPriceINR || 0).toLocaleString('en-IN') + '</span>' +
+                (r.couponCode && r.currentPriceINR && r.effectivePriceINR < r.currentPriceINR ? '<span style="font-size:0.78rem;text-decoration:line-through;color:#64748b;">₹' + Number(r.currentPriceINR).toLocaleString('en-IN') + '</span>' : '') +
+                (r.unitVolumeMl ? '<span style="font-size:0.75rem;color:#cbd5e1;">' + escHtml(r.unitVolumeMl) + ' ml</span>' : '') +
+                (r.pricePerMlINR ? '<span style="font-size:0.75rem;color:#67e8f9;font-weight:700;">₹' + Number(r.pricePerMlINR).toFixed(2) + '/ml</span>' : '') +
+              '</div>' +
+              couponHtml +
+              '<p style="font-size:0.82rem;color:#e2e8f0;margin-bottom:0.4rem;"><strong>Why it fits:</strong> ' + escHtml(r.matchReasoning) + '</p>' +
+              '<p style="font-size:0.8rem;color:#94a3b8;"><strong>Trade-off:</strong> ' + escHtml(r.tradeOffs) + '</p>' +
+              unverifiedHtml +
+              ytHtml +
+            '</div>' +
+            '<div style="padding-top:0.55rem;border-top:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">' +
+              '<span style="font-size:0.72rem;color:#94a3b8;">' + escHtml(r.disclosure) + '</span>' +
+              '<a href="' + escHtml(r.trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" data-deal-id="' + escHtml(r.dealId) + '" data-slot="' + escHtml(r.slot) + '" onclick="trackRecClick(this.dataset.dealId,this.dataset.slot)" class="btn btn-primary" style="padding:0.48rem 0.85rem;font-size:0.8rem;">' + escHtml(r.ctaLabel) + '</a>' +
+            '</div>' +
+          '</article>';
+        }).join('');
+        var amazonRails = (Array.isArray(d.crossStoreOptions) ? d.crossStoreOptions : []).filter(function(o) { return o && o.isAmazonSearchRail && o.trackingRedirectUrl; });
+        var amazonHtml = amazonRails.length > 0
+          ? '<div style="margin-top:0.75rem;padding:0.75rem 0.9rem;background:#111827;border:1px solid #334155;border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:0.6rem;flex-wrap:wrap;">' +
+              '<span style="font-size:0.78rem;color:#cbd5e1;">' + escHtml(amazonRails[0].disclosure || '') + '</span>' +
+              '<a href="' + escHtml(amazonRails[0].trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" style="font-size:0.82rem;font-weight:700;color:#fcd34d;text-decoration:none;">' + escHtml(amazonRails[0].ctaLabel || '') + '</a>' +
+            '</div>'
+          : '';
+        var modeLabel = d.analysisLabel ? String(d.analysisLabel) : (d.analysisMode === 'GEMINI_AI' ? 'Gemini AI Analysis' : 'Rule-Based Match (Deterministic Fallback)');
+        var modeColor = d.analysisMode === 'GEMINI_AI' ? '#38bdf8' : '#94a3b8';
+        out.innerHTML =
+          '<div style="background:#090d16;border:1px solid #1e293b;border-radius:12px;padding:1rem;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.4rem;">' +
+              '<div style="font-size:0.84rem;color:#cbd5e1;">' + escHtml(d.verdictSummary) + '</div>' +
+              '<span style="font-size:0.7rem;font-weight:600;color:' + modeColor + ';border:1px solid #1e293b;border-radius:999px;padding:0.15rem 0.6rem;">' + escHtml(modeLabel) + '</span>' +
+            '</div>' +
+            (d.aiBuyerNote ? '<div style="font-size:0.86rem;color:#38bdf8;margin-bottom:0.85rem;"><strong>Assistant Note:</strong> ' + escHtml(d.aiBuyerNote) + '</div>' : '') +
+            (recs.length > 0 ? '<div class="grid-2">' + cardsHtml + '</div>' : '<div style="font-size:0.86rem;color:#94a3b8;">No matching verified products found for those exact filters. Try broadening your budget or ingredient query.</div>') +
+            amazonHtml +
+          '</div>';
       } catch (err) {
-        if (statusEl) {
-          statusEl.style.color = '#f87171';
-          statusEl.textContent = err && err.message ? err.message : 'Could not submit enquiry.';
-        }
+        out.innerHTML = '<div style="font-size:0.85rem;color:#f87171;">Error: ' + escHtml(err.message || 'Check failed') + '</div>';
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'Send Pilot Enquiry \\u2192'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Find Best Matches →'; }
       }
     }
   </script>
-  ${renderCustomerDeskWidgetHtml('B2B_WEBSITE_ENQUIRY_SETUP')}
 </body>
 </html>`;
   }
@@ -690,7 +758,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
   <title>${pageTitle}</title>
   <meta name="description" content="${escapeMetaAttr(pageDesc)}">
   <link rel="canonical" href="${escapeMetaAttr(cleanSiteUrl)}/offer">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="noindex, nofollow">
   <meta property="og:title" content="${escapeMetaAttr(pageTitle)}">
   <meta property="og:description" content="${escapeMetaAttr(pageDesc)}">
   <meta property="og:type" content="website">
@@ -784,7 +852,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
       <p class="subtitle">Mobile-first admissions enquiry forms, WhatsApp click-to-chat routing, and structured lead tracking for training institutes.</p>
       <div style="margin-top: 1.25rem; display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap;">
         <a href="/demo" class="btn btn-primary" style="display: inline-block; background: #06b6d4; color: #090d16; font-weight: 700; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Try Live Interactive Demo &rarr;</a>
-        <a href="/#pilot-enquiry" class="btn btn-secondary" style="display: inline-block; background: #1e293b; color: #fff; border: 1px solid #334155; font-weight: 600; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Request Pilot Walkthrough</a>
+        <a href="/contact" class="btn btn-secondary" style="display: inline-block; background: #1e293b; color: #fff; border: 1px solid #334155; font-weight: 600; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Request Pilot Walkthrough</a>
       </div>
     </header>
 
@@ -805,7 +873,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
     <div class="card">
       <h2>Contact &amp; Verification</h2>
       <p style="color: #cbd5e1; font-size: 0.92rem;">
-        ${contactEmail ? `For Hyderabad Founding Pilot inquiries, contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : 'Reach the founder directly via our <a href="/contact" style="color: var(--accent);">Contact page</a> or <a href="/#pilot-enquiry" style="color: var(--accent);">pilot enquiry form</a>.'}
+        ${contactEmail ? `For Hyderabad Founding Pilot inquiries, contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : 'Reach the founder directly via our <a href="/contact" style="color: var(--accent);">Contact page</a>.'}
       </p>
     </div>
   </div>
@@ -905,7 +973,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
   <title>${escapeHtmlText(snapshot.productName)} | Verified Commercial Offer</title>
   <meta name="description" content="${escapeMetaAttr(snapshot.productName)} (${escapeMetaAttr(snapshot.sku)}) — Owner-attested commercial specification.">
   <link rel="canonical" href="${escapeMetaAttr(siteUrl)}/offer">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="noindex, nofollow">
   <style>
     :root {
       color-scheme: dark;

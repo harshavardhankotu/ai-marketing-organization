@@ -40,7 +40,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
 
       expect(html).toContain('Website Enquiry Path Repair');
       expect(html).toContain('Configuration Pending Owner Attestation');
-      expect(html).toContain('index, follow');
+      expect(html).toContain('noindex');
       expect(html).toContain('Direct online checkout is disabled');
       expect(html).not.toContain('upi://pay');
       expect(html).not.toContain('harshavardhan.kotu');
@@ -60,7 +60,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       });
 
       expect(html).toContain('Configuration Pending Owner Attestation');
-      expect(html).toContain('index, follow');
+      expect(html).toContain('noindex');
       expect(html).not.toContain('upi://pay');
     });
 
@@ -221,7 +221,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const htmlTop = await resTop.text();
       expect(htmlTop).toContain('Website Enquiry Path Repair');
       expect(htmlTop).toContain('Configuration Pending Owner Attestation');
-      expect(htmlTop).toContain('index, follow');
+      expect(htmlTop).toContain('noindex');
 
       const resApi = await app.request('/api/v1/offer');
       expect(resApi.status).toBe(200);

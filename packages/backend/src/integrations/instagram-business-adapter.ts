@@ -99,7 +99,7 @@ export interface InstagramPublishDealInput {
   imageUrl?: string | null;
   canonicalSlug?: string | null;
   productVerified?: boolean;
-  socialMediaPublishersAllowed?: boolean;
+  socialMediaPublishersAllowed?: boolean | 'UNKNOWN';
   evidence?: Record<string, any> | null;
 }
 
@@ -895,7 +895,7 @@ export class InstagramBusinessAdapter {
   }> {
     const handle = `@${this.getHandle()}`;
     const socialAllowedFlag =
-      deal.socialMediaPublishersAllowed !== false &&
+      deal.socialMediaPublishersAllowed === true &&
       deal.evidence?.socialMediaPublishersAllowed !== false &&
       deal.evidence?.social_media_publishers_allowed !== false;
 
@@ -1037,22 +1037,29 @@ export class InstagramBusinessAdapter {
     let topDeal: any = null;
     try {
       const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-      const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 5 });
+      const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 25 });
       topDeal = (eligible.deals || []).find(
         (d: any) =>
-          d.socialMediaPublishersAllowed !== false &&
+          d.socialMediaPublishersAllowed === true &&
           d.evidence?.socialMediaPublishersAllowed !== false &&
+          d.evidence?.social_media_publishers_allowed !== false &&
           Number(d.currentPriceINR || 0) > 0
-      ) || eligible.deals?.[0] || null;
+      ) || null;
     } catch {}
 
-    const dealTitle = topDeal?.title || 'Verified Fair-Price Deals India';
-    const priceLabel = topDeal?.currentPriceINR
+    if (!topDeal) {
+      const replyText = [
+        `Browse our verified fair-price buying guides and product comparisons here: ${siteUrl}/deals?utm_source=ig_dm`,
+        `Compare ingredients and budget options using our AI Buying Assistant at ${siteUrl}/?utm_source=ig_dm`
+      ].join('\n');
+      return { triggered: true, keyword, replyText };
+    }
+
+    const dealTitle = topDeal.title;
+    const priceLabel = topDeal.currentPriceINR
       ? ` (₹${Math.round(Number(topDeal.currentPriceINR)).toLocaleString('en-IN')})`
       : '';
-    const brandStoreUrl = topDeal?.id
-      ? `${siteUrl}/api/v1/public/deals/${encodeURIComponent(topDeal.id)}/redirect?utm_source=ig_dm`
-      : `${siteUrl}/ig?utm_source=ig_dm`;
+    const brandStoreUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(topDeal.id)}/redirect?utm_source=ig_dm`;
     const amazonUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(dealTitle)}&utm_source=ig_dm`;
 
     const replyText = [

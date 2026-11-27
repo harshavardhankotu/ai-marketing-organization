@@ -32,19 +32,13 @@ describe('PR #97: Coherent Storefront, /demo, Security Hardening, D1 Read Contai
   });
 
   describe('1. Cohesive Public Storefront, /demo, /offer & Legal Hygiene', () => {
-    it('serves focused Website Enquiry Path Repair storefront on GET / with /demo CTA, Founding Pilot ₹1,999, OG/JSON-LD, and compact mobile nav', async () => {
+    it('serves focused AI Buying Assistant storefront on GET / with upfront #Affiliate disclosure, OG/JSON-LD, and compact mobile nav', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
-      expect(html).toContain('Founding Pilot');
-      expect(html).toContain('₹1,999');
-      expect(html).toContain('₹999');
-      expect(html).toContain('₹1,000');
-      expect(html).toContain('7-day post-handover bug-fix window');
-      expect(html).toContain('href="/demo"');
-      expect(html).toContain('href="/offer"');
+      expect(html).toContain('AI Buying Assistant');
+      expect(html).toContain('#Affiliate');
       expect(html).toContain('property="og:title"');
       expect(html).toContain('application/ld+json');
       expect(html).toContain('href="/terms"');
@@ -52,30 +46,29 @@ describe('PR #97: Coherent Storefront, /demo, Security Hardening, D1 Read Contai
       expect(html).toContain('href="/refund"');
       expect(html).toContain('href="/contact"');
 
-      // Primary B2B top nav must exclude developer tools and consumer deals/guides
+      // Primary nav must exclude legacy B2B/SiteFix/tools routes
       const navMatch = html.match(/<nav class="top-nav"[\s\S]*?<\/nav>/);
       expect(navMatch).not.toBeNull();
       const navHtml = navMatch![0];
       expect(navHtml).toContain('href="/"');
-      expect(navHtml).toContain('href="/demo"');
-      expect(navHtml).toContain('href="/offer"');
+      expect(navHtml).toContain('href="/deals"');
       expect(navHtml).toContain('href="/contact"');
       expect(navHtml).not.toContain('/tools/site-audit');
-      expect(navHtml).not.toContain('/deals');
-      expect(navHtml).not.toContain('/guides/');
+      expect(navHtml).not.toContain('/demo');
+      expect(navHtml).not.toContain('/offer');
 
       // Must never leak internal paths, clinic copy, or "not an offer to contract"
       expect(html).not.toMatch(/not an offer to contract|DIRECT_OFFER\.md|OWN_OFFER\.md|Apex Dental|Dr\. Rajesh Sharma/i);
     });
 
-    it('registers /demo in EXACT_ROUTE_POLICY.PUBLIC and cleans /offer SSR metadata & footer', async () => {
+    it('registers /demo in EXACT_ROUTE_POLICY.PUBLIC and marks legacy /offer SSR as noindex', async () => {
       expect(EXACT_ROUTE_POLICY.PUBLIC).toContain('/demo');
 
       const offerRes = await app.request('/offer');
       expect(offerRes.status).toBe(200);
       const offerHtml = await offerRes.text();
       expect(offerHtml).toContain('<nav class="top-nav"');
-      expect(offerHtml).toContain('index, follow');
+      expect(offerHtml).toContain('noindex');
       expect(offerHtml).toContain('property="og:title"');
       expect(offerHtml).toContain('application/ld+json');
       expect(offerHtml).toContain('href="/terms"');

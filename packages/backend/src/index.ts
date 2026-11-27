@@ -413,15 +413,29 @@ app.get('/.well-known/mcp.json', (c) => {
   });
 });
 
-// Top-level public homepage route (B2B AI Inbound Lead Triage Storefront + Evolved Featured Deals)
+// Top-level public homepage route (AI Shopping Assistant Storefront)
 app.get('/', async (c) => {
   const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
   const { ExperimentEngine, STOREFRONT_DEAL_CTA_EXP_ID } = await import('./experiments/experiment-engine.js');
+  const { recordShoppingFunnelEvent } = await import('./commission/shopping-funnel-tracker.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
   const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const visitorKey = c.req.header('x-forwarded-for') || c.req.header('user-agent') || 'homepage';
   const dealCtaAssignment = ExperimentEngine.assignStorefrontVariant(STOREFRONT_DEAL_CTA_EXP_ID, visitorKey);
+
+  void recordShoppingFunnelEvent({
+    event: 'shopping_page_view',
+    path: '/',
+    userAgent: c.req.header('user-agent') || '',
+    clientIp: c.req.header('x-forwarded-for') || '',
+    headers: {
+      'x-diagnostic': c.req.header('x-diagnostic'),
+      'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
+      'x-test-traffic': c.req.header('x-test-traffic'),
+      'x-owner-preview': c.req.header('x-owner-preview')
+    }
+  });
 
   let featuredDeals: any[] = [];
   try {
@@ -447,6 +461,19 @@ app.get('/deals', async (c) => {
   const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
   const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
   const { ExperimentEngine, STOREFRONT_DEAL_CTA_EXP_ID } = await import('./experiments/experiment-engine.js');
+  const { recordShoppingFunnelEvent } = await import('./commission/shopping-funnel-tracker.js');
+  void recordShoppingFunnelEvent({
+    event: 'shopping_page_view',
+    path: '/deals',
+    userAgent: c.req.header('user-agent') || '',
+    clientIp: c.req.header('x-forwarded-for') || '',
+    headers: {
+      'x-diagnostic': c.req.header('x-diagnostic'),
+      'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
+      'x-test-traffic': c.req.header('x-test-traffic'),
+      'x-owner-preview': c.req.header('x-owner-preview')
+    }
+  });
   const siteUrl = getTrustedPublicSiteUrl();
   const trustedHost = new URL(siteUrl).host;
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
@@ -1123,7 +1150,7 @@ app.get('/revenue', async (c) => {
   <title>Transparent Public Revenue Funnel | ${siteName}</title>
   <meta name="description" content="Live, empirical affiliate revenue funnel for AI Marketing Organization. Strict distinction between test clicks, external visitors, conversions, and bank cash.">
   <link rel="canonical" href="${siteUrl}/revenue">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="noindex, nofollow">
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --card-border: #1e293b; --text: #e2e8f0; --accent: #06b6d4; --accent-orange: #f97316; --green: #10b981; }
     * { box-sizing: border-box; }
@@ -1683,19 +1710,10 @@ app.get('/sitemap.xml', async (c) => {
     auditUrlsSucceeded = false;
   }
 
+  // Shopping-only sitemap: exclude SiteFix audits, B2B/institute pitches, and sample admissions demos
   const staticUrls = [
     `${baseUrl}/`,
-    `${baseUrl}/demo`,
     `${baseUrl}/deals`,
-    `${baseUrl}/offer`,
-    `${baseUrl}/tools/site-audit`,
-    `${baseUrl}/tools/whatsapp-link-preview-checker`,
-    `${baseUrl}/tools/open-graph-checker`,
-    `${baseUrl}/tools/robots-and-sitemap-validator`,
-    `${baseUrl}/tools/json-ld-tester`,
-    `${baseUrl}/tools/financial-radar`,
-    `${baseUrl}/tools/lead-leakage-calculator`,
-    `${baseUrl}/revenue`,
     `${baseUrl}/disclosure`,
     `${baseUrl}/public/disclosure`,
     `${baseUrl}/privacy`,
@@ -1705,7 +1723,7 @@ app.get('/sitemap.xml', async (c) => {
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...bestUrls, ...compareUrls, ...vsUrls, ...contentUrls, ...auditUrls, ...dealUrls];
+  const allUrls = [...staticUrls, ...bestUrls, ...compareUrls, ...vsUrls, ...contentUrls, ...dealUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)

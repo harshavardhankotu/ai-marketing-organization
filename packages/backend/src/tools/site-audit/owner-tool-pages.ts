@@ -248,7 +248,7 @@ export function renderOwnerToolPage(
   <title>${escapeHtmlAttr(def.title)}</title>
   <meta name="description" content="${escapeHtmlAttr(def.metaDescription)}">
   <link rel="canonical" href="${escapeHtmlAttr(canonicalHref)}">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="noindex, nofollow">
   <meta property="og:title" content="${escapeHtmlAttr(def.title)}">
   <meta property="og:description" content="${escapeHtmlAttr(def.metaDescription)}">
   <meta property="og:type" content="website">
