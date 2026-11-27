@@ -523,4 +523,109 @@ describe('PR #104 — AI Shopping Assistant Core', () => {
       dealsSpy.mockRestore();
     }
   });
+
+  it('excludes x-test-mode and x-internal-admin deal redirects from verified funnel counts', async () => {
+    const db = getDb();
+    db.prepare(`DELETE FROM durable_events WHERE event_type = 'affiliate_redirect'`).run();
+
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const deal = createHighIntentStarterDeals()[0];
+    const testDealId = deal.id;
+    const prevClKey = process.env.CUELINKS_API_KEY;
+    const prevClChannel = process.env.CUELINKS_CHANNEL_ID;
+    process.env.CUELINKS_API_KEY = 'test_cuelinks_key';
+    process.env.CUELINKS_CHANNEL_ID = '331585';
+    const chanSpy = vi.spyOn(CuelinksSyncManager.prototype, 'getApprovedChannel').mockResolvedValue({
+      approved: true,
+      channel: { id: 331585, name: 'Test Channel', approval_status: 'approved' }
+    } as any);
+    const clSpy = vi.spyOn(CuelinksV3Client.prototype, 'convertLink').mockResolvedValue({
+      affiliated: true,
+      tracking_url: `https://linksredirect.com/?cid=${encodeURIComponent(deal.affiliateCampaignId || '4098')}&url=${encodeURIComponent(deal.productUrl)}`,
+      campaign: { id: deal.affiliateCampaignId || '4098' }
+    } as any);
+    (engine as any).dealsMap.set(testDealId, {
+      ...deal,
+      affiliateNetwork: 'CUELINKS',
+      affiliateCampaignId: deal.affiliateCampaignId || '4098'
+    });
+    db.prepare(`
+      INSERT OR REPLACE INTO partners (id, organization_id, name, industry, website, network, authorization_status, approval_status, active_status, updated_at)
+      VALUES ('part_cuelinks', 'org_owner_primary', 'Cuelinks', 'E-commerce', 'https://cuelinks.com', 'CUELINKS', 'AUTHORIZED', 'APPROVED', 1, datetime('now'))
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO partner_offers (id, organization_id, partner_id, offer_slug, title, category, target_customer, destination_url, authorized_tracking_url, active, status, created_at, updated_at)
+      VALUES (?, 'org_owner_primary', 'part_cuelinks', ?, 'Test Serum Offer', 'SKINCARE', 'Skincare shoppers', ?, ?, 1, 'ACTIVE', datetime('now'), datetime('now'))
+    `).run(testDealId, testDealId, deal.productUrl, `https://linksredirect.com/?cid=${deal.affiliateCampaignId || '4098'}`);
+
+    try {
+      const rTestMode = await app.request(`/api/v1/public/deals/${testDealId}/redirect`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0',
+          'x-test-mode': '1'
+        }
+      });
+      expect(rTestMode.status).toBe(302);
+
+      const rInternal = await app.request(`/api/v1/public/deals/${testDealId}/redirect`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0',
+          'x-internal-admin': 'true'
+        }
+      });
+      expect(rInternal.status).toBe(302);
+
+      await new Promise(r => setTimeout(r, 50));
+      const { getShoppingFunnelSummaryAsync } = await import('../../src/commission/shopping-funnel-tracker.js');
+      const summary = await getShoppingFunnelSummaryAsync();
+      expect(summary.window24h.affiliate_redirect).toBe(0);
+      expect(summary.window7d.affiliate_redirect).toBe(0);
+    } finally {
+      chanSpy.mockRestore();
+      clSpy.mockRestore();
+      if (prevClKey !== undefined) process.env.CUELINKS_API_KEY = prevClKey;
+      else delete process.env.CUELINKS_API_KEY;
+      if (prevClChannel !== undefined) process.env.CUELINKS_CHANNEL_ID = prevClChannel;
+      else delete process.env.CUELINKS_CHANNEL_ID;
+    }
+  });
+
+  it('tracks /api/v1/public/amazon-redirect affiliate_redirect on 302 (tagged provider: amazon) and skips on 503', async () => {
+    const db = getDb();
+    db.prepare(`DELETE FROM durable_events WHERE event_type = 'affiliate_redirect'`).run();
+
+    const prevAmzTag = process.env.AMAZON_AFFILIATE_TAG;
+    delete process.env.AMAZON_AFFILIATE_TAG;
+
+    try {
+      // Missing AMAZON_AFFILIATE_TAG -> 503 and 0 affiliate_redirect rows
+      const failRes = await app.request('/api/v1/public/amazon-redirect?q=niacinamide+serum', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0' }
+      });
+      expect(failRes.status).toBe(503);
+
+      const { getShoppingFunnelSummaryAsync } = await import('../../src/commission/shopping-funnel-tracker.js');
+      const afterFail = await getShoppingFunnelSummaryAsync();
+      expect(afterFail.window24h.affiliate_redirect).toBe(0);
+
+      // Configured tag -> 302 and increments affiliate_redirect with provider: 'amazon'
+      process.env.AMAZON_AFFILIATE_TAG = 'testtag-21';
+      const okRes = await app.request('/api/v1/public/amazon-redirect?q=niacinamide+serum&placement=assistant_amazon', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0' }
+      });
+      expect(okRes.status).toBe(302);
+
+      const afterOk = await getShoppingFunnelSummaryAsync();
+      expect(afterOk.window24h.affiliate_redirect).toBe(1);
+      expect(afterOk.window7d.affiliate_redirect).toBe(1);
+
+      const row = db.prepare(`SELECT payload_json FROM durable_events WHERE event_type = 'affiliate_redirect' LIMIT 1`).get() as any;
+      expect(row).toBeDefined();
+      const payload = JSON.parse(row.payload_json);
+      expect(payload.provider).toBe('amazon');
+    } finally {
+      if (prevAmzTag !== undefined) process.env.AMAZON_AFFILIATE_TAG = prevAmzTag;
+      else delete process.env.AMAZON_AFFILIATE_TAG;
+    }
+  });
 });

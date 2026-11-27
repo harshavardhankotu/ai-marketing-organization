@@ -10582,7 +10582,9 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
         'x-diagnostic': c.req.header('x-diagnostic') || '',
         'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
         'x-test-traffic': c.req.header('x-test-traffic') || '',
-        'x-test-mode': c.req.header('x-test-mode') || ''
+        'x-test-mode': c.req.header('x-test-mode') || '',
+        'x-owner-preview': c.req.header('x-owner-preview') || '',
+        'x-internal-admin': c.req.header('x-internal-admin') || ''
       });
       const rawAmzPlacement = c.req.query('placement') || c.req.query('utm_placement') || 'amazon_dual_rail';
       const sanitizedAmzPlacement = /^[a-zA-Z0-9_\-]{1,64}$/.test(rawAmzPlacement) ? rawAmzPlacement : 'amazon_dual_rail';
@@ -10655,6 +10657,30 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
       console.warn(`[AmazonRedirect] Click attribution persistence warning: ${dbErr?.message || 'unknown error'}`);
     }
   }
+
+  const amzClientInfo = getTrustedClientIp(c);
+  const amzUserAgent = c.req.header('user-agent') || '';
+  const rawAmzPlacementOut = c.req.query('placement') || c.req.query('utm_placement') || 'amazon_dual_rail';
+  const sanitizedAmzPlacementOut = /^[a-zA-Z0-9_\-]{1,64}$/.test(rawAmzPlacementOut) ? rawAmzPlacementOut : 'amazon_dual_rail';
+  const { recordShoppingFunnelEvent } = await import('../commission/shopping-funnel-tracker.js');
+  await recordShoppingFunnelEvent({
+    event: 'affiliate_redirect',
+    path: '/api/v1/public/amazon-redirect',
+    dealId: dealId || undefined,
+    slot: sanitizedAmzPlacementOut,
+    query: rawQuery ? rawQuery.slice(0, 120) : undefined,
+    metadata: { provider: 'amazon', clickId },
+    userAgent: amzUserAgent,
+    clientIp: amzClientInfo.ip,
+    headers: {
+      'x-diagnostic': c.req.header('x-diagnostic'),
+      'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
+      'x-test-traffic': c.req.header('x-test-traffic'),
+      'x-test-mode': c.req.header('x-test-mode'),
+      'x-owner-preview': c.req.header('x-owner-preview'),
+      'x-internal-admin': c.req.header('x-internal-admin')
+    }
+  });
 
   return c.redirect(targetUrl, 302);
 });
@@ -10823,7 +10849,9 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     'x-diagnostic': c.req.header('x-diagnostic') || '',
     'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
     'x-test-traffic': c.req.header('x-test-traffic') || '',
-    'x-owner-preview': c.req.header('x-owner-preview') || ''
+    'x-test-mode': c.req.header('x-test-mode') || '',
+    'x-owner-preview': c.req.header('x-owner-preview') || '',
+    'x-internal-admin': c.req.header('x-internal-admin') || ''
   });
 
   const partnerId = isAmazonDeal ? 'part_amazon_in' : 'part_cuelinks';
@@ -10917,7 +10945,9 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
           'x-diagnostic': c.req.header('x-diagnostic'),
           'x-diagnostic-probe': c.req.header('x-diagnostic-probe'),
           'x-test-traffic': c.req.header('x-test-traffic'),
-          'x-owner-preview': c.req.header('x-owner-preview')
+          'x-test-mode': c.req.header('x-test-mode'),
+          'x-owner-preview': c.req.header('x-owner-preview'),
+          'x-internal-admin': c.req.header('x-internal-admin')
         }
       })
     ).catch(() => {});
