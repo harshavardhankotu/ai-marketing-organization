@@ -31,7 +31,7 @@ interface SkincareSerumBlueprint {
   buyerFitSummary: string;
   skipFitSummary: string;
   rawSpecs: Record<string, string>;
-  epc7d: number;
+  epc7d: number | null;
   confidenceScore: number;
   buyerValueScore: number;
   isFeatured?: boolean;
@@ -277,9 +277,9 @@ function buildSkincareDeal(spec: SkincareSerumBlueprint, opts: { isSeedFallback:
     economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
     verifiedCommissionRatePercent: spec.verifiedCommissionRatePercent,
     expectedCommissionYieldINR: yieldINR,
-    epc7d: spec.epc7d,
-    providerEpc7dINR: spec.epc7d,
-    expectedProfitPer100VisitorsINR: Number((yieldINR * 2).toFixed(2)),
+    epc7d: spec.epc7d ?? undefined,
+    providerEpc7dINR: spec.epc7d ?? null,
+    expectedProfitPer100VisitorsINR: spec.epc7d !== null ? Number((yieldINR * 2).toFixed(2)) : 0,
     rejectionReasons: [],
     createdAt: opts.timestamp,
     updatedAt: opts.timestamp,
@@ -325,7 +325,7 @@ interface LaptopBlueprint {
   buyerFitSummary: string;
   skipFitSummary: string;
   rawSpecs: Record<string, string>;
-  epc7d: number;
+  epc7d: number | null;
   confidenceScore: number;
   buyerValueScore: number;
   isFeatured?: boolean;
@@ -349,7 +349,7 @@ const VERIFIED_LAPTOP_BLUEPRINTS: LaptopBlueprint[] = [
     targetBuyerSegment: 'Indian students, coders, and office buyers looking for 16GB RAM + 512GB SSD under ₹50,000',
     buyerFitSummary: 'Verified 16GB RAM + 512GB SSD + Full HD IPS 15.6" panel at 1.59 kg under ₹45,000.',
     skipFitSummary: 'Skip if you need a dedicated GPU for heavy 3D gaming or a compact 14-inch chassis.',
-    epc7d: 0.31,
+    epc7d: null,
     confidenceScore: 95,
     buyerValueScore: 96,
     isFeatured: true,
@@ -378,7 +378,7 @@ const VERIFIED_LAPTOP_BLUEPRINTS: LaptopBlueprint[] = [
     targetBuyerSegment: 'Developers and multitaskers under ₹55,000 wanting an H-series Intel i5 with 16GB RAM',
     buyerFitSummary: '12th Gen Intel Core i5-12450H + 16GB RAM + 512GB SSD + Full HD IPS display and backlit keyboard.',
     skipFitSummary: 'Heavier at 1.70 kg; skip if ultra-lightweight travel portability is your top priority.',
-    epc7d: 0.31,
+    epc7d: null,
     confidenceScore: 94,
     buyerValueScore: 94,
     isFeatured: true,
@@ -408,7 +408,7 @@ const VERIFIED_LAPTOP_BLUEPRINTS: LaptopBlueprint[] = [
     targetBuyerSegment: 'Everyday browsing, documents, and study users under ₹50,000',
     buyerFitSummary: 'AMD Ryzen 3 7330U with backlit keyboard at 1.65 kg, in stock on Acer India Store.',
     skipFitSummary: 'Comes with 8GB RAM and 256GB SSD — skip if you need 16GB RAM or 512GB SSD out of the box.',
-    epc7d: 0.31,
+    epc7d: null,
     confidenceScore: 93,
     buyerValueScore: 86,
     rawSpecs: {
@@ -437,7 +437,7 @@ const VERIFIED_LAPTOP_BLUEPRINTS: LaptopBlueprint[] = [
     targetBuyerSegment: 'Office and student users needing pre-installed MS Office at 1.59 kg',
     buyerFitSummary: '13th Gen Intel Core i3-1315U with Windows 11 Home + MS Office at 1.59 kg.',
     skipFitSummary: '8GB RAM / 256GB SSD at ₹54,999 — 16GB Ryzen 5/i5 alternatives offer more RAM/storage.',
-    epc7d: 0.31,
+    epc7d: null,
     confidenceScore: 92,
     buyerValueScore: 82,
     rawSpecs: {
@@ -465,7 +465,7 @@ const VERIFIED_LAPTOP_BLUEPRINTS: LaptopBlueprint[] = [
     targetBuyerSegment: 'Lightweight 14-inch business and travel buyers under ₹70,000',
     buyerFitSummary: 'Ultra-portable 1.30 kg 14-inch chassis with Intel Core Ultra 5 125H, 512GB SSD, and MS Office.',
     skipFitSummary: 'Listed with 8GB RAM at ₹69,999 — skip if you strictly need 16GB RAM out of the box.',
-    epc7d: 0.31,
+    epc7d: null,
     confidenceScore: 93,
     buyerValueScore: 88,
     rawSpecs: {
@@ -535,9 +535,9 @@ function buildLaptopDeal(spec: LaptopBlueprint, opts: { isSeedFallback: boolean;
     economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
     verifiedCommissionRatePercent: spec.verifiedCommissionRatePercent,
     expectedCommissionYieldINR: yieldINR,
-    epc7d: spec.epc7d,
-    providerEpc7dINR: spec.epc7d,
-    expectedProfitPer100VisitorsINR: Number((yieldINR * 2).toFixed(2)),
+    epc7d: spec.epc7d ?? undefined,
+    providerEpc7dINR: spec.epc7d ?? null,
+    expectedProfitPer100VisitorsINR: spec.epc7d !== null ? Number((yieldINR * 2).toFixed(2)) : 0,
     rejectionReasons: [],
     createdAt: opts.timestamp,
     updatedAt: opts.timestamp,

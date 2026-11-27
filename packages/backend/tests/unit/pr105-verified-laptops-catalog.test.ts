@@ -148,5 +148,85 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
     const homeHtml = await (await app.request('/')).text();
     expect(homeHtml).toContain('best laptop under 60000');
     expect(homeHtml).toContain('niacinamide serum under 800');
+    expect(homeHtml).toContain('max="100000"');
+
+    const dealsHtml = await (await app.request('/deals')).text();
+    expect(dealsHtml).toContain('max="100000"');
+  });
+
+  it('publishes 5 verified Acer laptops (4360) in production pipeline without fabricating epc7d: 0.31 and excludes non-laptop Electronics from laptop queries', async () => {
+    const laptops = createVerifiedLiveLaptops();
+    for (const l of laptops) {
+      expect(l.epc7d).toBeUndefined();
+      expect(l.providerEpc7dINR).toBeNull();
+      expect(l.expectedProfitPer100VisitorsINR).toBe(0);
+    }
+
+    // Non-laptop Electronics (e.g., earbuds) must never appear in laptop recommendations
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    for (const d of createHighIntentStarterDeals()) {
+      (engine as any).dealsMap.set(d.id, d);
+    }
+    (engine as any).dealsMap.set('deal_earbuds_electronics_test', {
+      ...laptops[0],
+      id: 'deal_earbuds_electronics_test',
+      slug: 'boat-airdopes-electronics-test',
+      title: 'boAt Airdopes 141 Wireless Earbuds (Electronics)',
+      category: 'Electronics',
+      subCategory: 'audio',
+      currentPriceINR: 1299
+    });
+
+    const laptopRes = await app.request('/api/v1/public/fair-price-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        queryOrUrl: 'best laptop under 60000 for coding, 16GB RAM',
+        skipAiSynthesis: true
+      })
+    });
+    expect(laptopRes.status).toBe(200);
+    const laptopJson = (await laptopRes.json()) as any;
+    expect(laptopJson.data.recommendations.some((r: any) => /earbud|airdopes/i.test(r.title))).toBe(false);
+
+    // Production publisher pipeline includes all 6 serums + 5 Acer laptops (11 total)
+    const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+    const { CuelinksV3Client } = await import('../../src/commission/cuelinks-v3-client.js');
+    const { CommercialOpportunitySelector } = await import('../../src/commission/commercial-opportunity-selector.js');
+
+    const chanSpy = vi.spyOn(CuelinksSyncManager.prototype, 'getApprovedChannel').mockResolvedValue({
+      approved: true,
+      channel: { id: 331585, name: 'Channel 331585', approval_status: 'approved' }
+    } as any);
+    const probeSpy = vi.spyOn(CommercialOpportunitySelector.prototype, 'probeMerchantProduct').mockResolvedValue({
+      probed: true,
+      available: true,
+      status: 'IN_STOCK',
+      priceINR: 0
+    } as any);
+    const convSpy = vi.spyOn(CuelinksV3Client.prototype, 'convertLink').mockImplementation(async (params: any) => {
+      const u = String(params?.url || '');
+      const campId = u.includes('store.acer.com') ? '4360' : (u.includes('worldofasaya') ? '6458' : (u.includes('plumgoodness') ? '4098' : (u.includes('dotandkey') ? '4879' : '4161')));
+      return {
+        affiliated: true,
+        tracking_url: `https://linksredirect.com/?cid=331585&url=${encodeURIComponent(u)}`,
+        campaign: { id: campId }
+      } as any;
+    });
+    const persistSpy = vi.spyOn(engine as any, 'persistDealToD1').mockResolvedValue(undefined);
+    const offerSpy = vi.spyOn(engine as any, 'provisionMatchingPartnerOffer').mockResolvedValue(undefined);
+
+    try {
+      const pubRes = await engine.publishVerifiedSkincareCatalog('org_owner_primary', 'biz_platform_aro');
+      expect(pubRes.publishedCount).toBe(11);
+      const publishedLaptops = pubRes.deals.filter(d => d.campaignId === '4360');
+      expect(publishedLaptops.length).toBe(5);
+    } finally {
+      chanSpy.mockRestore();
+      probeSpy.mockRestore();
+      convSpy.mockRestore();
+      persistSpy.mockRestore();
+      offerSpy.mockRestore();
+    }
   });
 });

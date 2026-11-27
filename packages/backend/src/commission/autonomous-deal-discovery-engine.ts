@@ -28,7 +28,7 @@ import {
   SectorCode,
   GuideDataUnavailableError
 } from './deal-types.js';
-import { createHighIntentStarterDeals, createVerifiedLiveSkincareSerums } from './starter-deals.js';
+import { createHighIntentStarterDeals, createVerifiedLiveSkincareSerums, createVerifiedLiveLaptops } from './starter-deals.js';
 
 export { GuideDataUnavailableError };
 
@@ -6408,7 +6408,7 @@ export class AutonomousDealDiscoveryEngine {
     const { CommercialOpportunitySelector } = await import('./commercial-opportunity-selector.js');
     const selector = CommercialOpportunitySelector.getInstance();
     const channelId = Number(channelRes.channel.id);
-    const serums = createVerifiedLiveSkincareSerums();
+    const serums = [...createVerifiedLiveSkincareSerums(), ...createVerifiedLiveLaptops()];
     const repairs = await this.repairCorruptObjectCategories();
     const published: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }> = [];
 
@@ -8710,6 +8710,16 @@ export class AutonomousDealDiscoveryEngine {
         : null;
     };
 
+    const isLaptopDeal = (d: NormalizedDeal): boolean => {
+      const sub = String(d.subCategory || d.evidenceJson?.subCategory || '').toLowerCase();
+      if (sub === 'laptop') return true;
+      const text = `${d.title || ''} ${d.evidenceJson?.rawSpecs?.['Sub-Category'] || ''}`;
+      if (/\b(earbud|tws|headphone|speaker|soundbar|watch|smartwatch|monitor|adapter|keyboard|mouse|dashcam|serum)\b/i.test(text)) {
+        return false;
+      }
+      return /\b(laptop|notebook|ultrabook|aspire|swift|nitro|vivobook|ideapad|thinkpad|inspiron|pavilion|macbook)\b/i.test(text);
+    };
+
     const scoreShopperFit = (d: NormalizedDeal): number => {
       const specs = (d.evidenceJson?.rawSpecs || {}) as Record<string, string>;
       const specsText = Object.entries(specs).map(([k, v]) => `${k} ${v}`).join(' ');
@@ -8728,12 +8738,12 @@ export class AutonomousDealDiscoveryEngine {
           fitScore += 8;
         }
       }
-      const isDealLaptop = d.subCategory === 'laptop' || d.category === 'Electronics' || /\b(laptop|aspire|swift|nitro)\b/i.test(d.title);
+      const isDealLaptop = isLaptopDeal(d);
       const isDealSkincare = d.subCategory === 'face-serum' || d.category === 'Health & Beauty';
 
       if (isLaptopQuery && !isSkincareQuery) {
         if (isDealLaptop) fitScore += 25;
-        if (isDealSkincare) fitScore -= 80;
+        else fitScore -= 80;
       } else if (isSkincareQuery && !isLaptopQuery) {
         if (isDealSkincare) fitScore += 15;
         if (isDealLaptop) fitScore -= 80;
@@ -9064,7 +9074,7 @@ export class AutonomousDealDiscoveryEngine {
       const specs = (deal.evidenceJson?.rawSpecs || {}) as Record<string, string>;
       const unitVolumeMl = Number(deal.unitVolumeMl ?? deal.evidenceJson?.unitVolumeMl ?? 0) || null;
       const pricePerMlINR = computeCanonicalPricePerMl(deal);
-      const isLaptopCard = deal.subCategory === 'laptop' || deal.category === 'Electronics';
+      const isLaptopCard = isLaptopDeal(deal);
       const keyIngredients = isLaptopCard ? null : (specs['Key Ingredients'] || null);
       const rawFragranceProfile = isLaptopCard ? null : (specs['Fragrance Profile'] || null);
       const fragranceProfile = isLaptopCard ? null : (rawFragranceProfile || 'Not listed on merchant page');

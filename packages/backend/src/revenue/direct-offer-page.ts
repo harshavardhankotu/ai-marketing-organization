@@ -550,7 +550,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
         <div class="form-grid">
           <div>
             <label for="assistant-budget">Max Budget (₹)</label>
-            <input id="assistant-budget" type="number" min="100" max="50000" placeholder="e.g. 800">
+            <input id="assistant-budget" type="number" min="100" max="100000" placeholder="e.g. 60000 or 800">
           </div>
           <div>
             <label for="assistant-skin">Skin Type / Need</label>

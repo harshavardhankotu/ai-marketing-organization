@@ -1397,7 +1397,7 @@ export class StaticSiteGenerator {
       <form onsubmit="handleFairPriceDealsSsr(event)" style="display: grid; gap: 0.65rem;">
         <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
           <input type="text" id="fp-query-deals-ssr" required placeholder="e.g. niacinamide serum under 800, oily skin, avoid fragrance" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
-          <input type="number" id="fp-budget-deals-ssr" min="100" max="50000" placeholder="Max ₹" style="width: 110px; padding: 0.7rem 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
+          <input type="number" id="fp-budget-deals-ssr" min="100" max="100000" placeholder="Max ₹" style="width: 110px; padding: 0.7rem 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
           <button type="submit" id="fp-btn-deals-ssr" style="background: #06b6d4; color: #020617; font-weight: 700; border: none; border-radius: 8px; padding: 0.7rem 1.25rem; cursor: pointer; font-size: 0.88rem;">Match Products</button>
         </div>
         <div style="display: flex; gap: 0.85rem; flex-wrap: wrap; align-items: center; font-size: 0.8rem; color: #cbd5e1;">
