@@ -28,7 +28,7 @@ import {
   SectorCode,
   GuideDataUnavailableError
 } from './deal-types.js';
-import { createHighIntentStarterDeals, createVerifiedLiveSkincareSerums } from './starter-deals.js';
+import { createHighIntentStarterDeals, createVerifiedLiveSkincareSerums, createVerifiedLiveLaptops } from './starter-deals.js';
 
 export { GuideDataUnavailableError };
 
@@ -245,7 +245,7 @@ export interface ShopperPreferences {
 
 export interface RecommendationCard {
   slot: 'BEST_MATCH' | 'BEST_VALUE' | 'ALTERNATIVE_CHOICE';
-  slotLabel: 'Best Match' | 'Best Value (₹/ml)' | 'Alternative Choice';
+  slotLabel: 'Best Match' | 'Best Value' | 'Best Value (₹/ml)' | 'Alternative Choice';
   dealId: string;
   slug: string;
   title: string;
@@ -6398,7 +6398,12 @@ export class AutonomousDealDiscoveryEngine {
   public async publishVerifiedSkincareCatalog(
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
-  ): Promise<{ publishedCount: number; deals: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }>; repairs: { publicDealsRepaired: number; campaignsRepaired: number } }> {
+  ): Promise<{
+    publishedCount: number;
+    deals: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }>;
+    rejected: Array<{ id: string; slug: string; campaignId: string; probeStatus: string; reason: string }>;
+    repairs: { publicDealsRepaired: number; campaignsRepaired: number };
+  }> {
     const cuelinksClient = CuelinksV3Client.getInstance();
     const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
     const channelRes = await cuelinksSync.getApprovedChannel();
@@ -6408,9 +6413,10 @@ export class AutonomousDealDiscoveryEngine {
     const { CommercialOpportunitySelector } = await import('./commercial-opportunity-selector.js');
     const selector = CommercialOpportunitySelector.getInstance();
     const channelId = Number(channelRes.channel.id);
-    const serums = createVerifiedLiveSkincareSerums();
+    const serums = [...createVerifiedLiveSkincareSerums(), ...createVerifiedLiveLaptops()];
     const repairs = await this.repairCorruptObjectCategories();
     const published: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }> = [];
+    const rejected: Array<{ id: string; slug: string; campaignId: string; probeStatus: string; reason: string }> = [];
 
     try {
       for (let idx = 0; idx < serums.length; idx++) {
@@ -6419,19 +6425,26 @@ export class AutonomousDealDiscoveryEngine {
           await new Promise(resolve => setTimeout(resolve, 400));
         }
         const probe = await selector.probeMerchantProduct(deal.productUrl);
-        if (probe.status === 'DEAD_OR_OUT_OF_STOCK' || (probe.probed && probe.available === false && Number(probe.httpStatus || 0) === 404)) {
-          throw new Error(`MERCHANT_UNAVAILABLE for ${deal.id}: ${probe.error || probe.status}`);
+        if (probe.status !== 'IN_STOCK' || probe.available !== true) {
+          rejected.push({
+            id: deal.id,
+            slug: deal.slug || deal.canonicalSlug || deal.id,
+            campaignId: String(deal.affiliateCampaignId || ''),
+            probeStatus: String(probe.status || 'UNPROBED'),
+            reason: probe.error || `PROBE_NOT_IN_STOCK:${String(probe.status || 'UNPROBED')}`
+          });
+          continue;
         }
-        if (probe.probed && probe.available === true && probe.priceINR && probe.priceINR > 0) {
+        const observedNow = new Date().toISOString();
+        deal.observedAt = observedNow;
+        deal.lastCheckedAt = observedNow;
+        deal.lastVerifiedAt = observedNow;
+        deal.updatedAt = observedNow;
+        if (probe.priceINR && probe.priceINR > 0) {
           deal.currentPriceINR = probe.priceINR;
           if (deal.unitVolumeMl && deal.unitVolumeMl > 0) {
             deal.pricePerMlINR = Number((probe.priceINR / deal.unitVolumeMl).toFixed(2));
           }
-          const observedNow = new Date().toISOString();
-          deal.observedAt = observedNow;
-          deal.lastCheckedAt = observedNow;
-          deal.lastVerifiedAt = observedNow;
-          deal.updatedAt = observedNow;
         }
 
         const convRes = await cuelinksClient.convertLink({
@@ -6472,7 +6485,7 @@ export class AutonomousDealDiscoveryEngine {
       this.clearRelationshipCache();
     }
 
-    return { publishedCount: published.length, deals: published, repairs };
+    return { publishedCount: published.length, deals: published, rejected, repairs };
   }
 
   public mapCategoryToSectorCode(category: string): SectorCode {
@@ -8689,10 +8702,23 @@ export class AutonomousDealDiscoveryEngine {
       avoidIngredients.some(a => a === 'fragrance' || a.includes('fragrance')) ||
       /(?:fragrance[\s-]?free|avoid\s+fragrance|no\s+fragrance|without\s+fragrance)/i.test(rawSearchString);
     const wantsLightweight = /(?:lightweight|non[\s-]?greasy|non[\s-]?sticky|water[\s-]?light)/i.test(rawSearchString);
-    const skinTypePref = (input.preferences?.skinType || (rawSearchString.match(/\b(oily|combination|dry|sensitive|beginner)\b/i)?.[1] || '')).trim().toLowerCase();
+    const isLaptopQuery = /\b(laptop|laptops|notebook|ultrabook|coding|programming|ram|ssd|ryzen|intel|core\s*i[357]|core\s*ultra)\b/i.test(rawSearchString);
+    const hasExplicitSkincareTerms = /\b(serum|skincare|skin\s*type|niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|pore|acne|fragrance)\b/i.test(rawSearchString);
+    const skinTypeMatch = rawSearchString.match(/\b(oily|combination|dry|sensitive|beginner)\b/i)?.[1] || '';
+    const skinTypePref = (
+      input.preferences?.skinType ||
+      (isLaptopQuery && !hasExplicitSkincareTerms && skinTypeMatch.toLowerCase() === 'beginner' ? '' : skinTypeMatch)
+    ).trim().toLowerCase();
     const activePref = (input.preferences?.activeIngredient || (rawSearchString.match(/\b(niacinamide|vitamin\s*c|alpha\s*arbutin|kumkumadi|saffron)\b/i)?.[1] || '')).trim().toLowerCase();
     const prioritizeLowestPricePerMl = Boolean(input.preferences?.prioritizeLowestPricePerMl) ||
       /(?:₹\/ml|per\s*ml|best\s*value|cheapest\s*per\s*ml)/i.test(rawSearchString);
+    const isSkincareQuery = Boolean(input.preferences?.skinType || activePref || wantsFragranceFree || hasExplicitSkincareTerms) ||
+      Boolean(skinTypePref && (!isLaptopQuery || hasExplicitSkincareTerms));
+    const requestedRamMatch = rawSearchString.match(/\b(8|16|32)\s*gb(?:\s*ram)?\b/i);
+    const requestedRamGb = requestedRamMatch ? Number(requestedRamMatch[1]) : null;
+    const requestedSsdMatch = rawSearchString.match(/\b(256|512)\s*gb\s*ssd\b|\b(1)\s*tb\s*ssd\b/i);
+    const requestedSsdGb = requestedSsdMatch ? (requestedSsdMatch[2] ? 1024 : Number(requestedSsdMatch[1])) : null;
+    const wantsCodingOrWork = /\b(coding|programming|developer|work|office|student|college|study|multitasking)\b/i.test(rawSearchString);
 
     const computeCanonicalPricePerMl = (d: NormalizedDeal): number | null => {
       const unitVolumeMl = Number(d.unitVolumeMl ?? d.evidenceJson?.unitVolumeMl ?? 0) || null;
@@ -8700,6 +8726,16 @@ export class AutonomousDealDiscoveryEngine {
       return (currentPrice > 0 && unitVolumeMl && unitVolumeMl > 0)
         ? Number((currentPrice / unitVolumeMl).toFixed(2))
         : null;
+    };
+
+    const isLaptopDeal = (d: NormalizedDeal): boolean => {
+      const sub = String(d.subCategory || d.evidenceJson?.subCategory || '').toLowerCase();
+      const titleAndSub = `${d.title || ''} ${d.evidenceJson?.rawSpecs?.['Sub-Category'] || ''}`;
+      if (/\b(keyboard\s*cover|laptop\s*(?:bag|sleeve|stand|charger|adapter|skin)|cooling\s*pad|earbud|tws|headphone|speaker|soundbar|watch|smartwatch|monitor|dashcam|serum|wireless\s*mouse|usb\s*mouse)\b/i.test(titleAndSub)) {
+        return false;
+      }
+      if (sub === 'laptop') return true;
+      return /\b(laptop|notebook|ultrabook|aspire|swift|nitro|vivobook|ideapad|thinkpad|inspiron|pavilion|macbook)\b/i.test(titleAndSub);
     };
 
     const scoreShopperFit = (d: NormalizedDeal): number => {
@@ -8718,6 +8754,40 @@ export class AutonomousDealDiscoveryEngine {
         const stem = tok.length > 3 && tok.endsWith('s') ? tok.slice(0, -1) : tok;
         if (hayTokens.has(tok) || hayTokens.has(stem)) {
           fitScore += 8;
+        }
+      }
+      const isDealLaptop = isLaptopDeal(d);
+      const isDealSkincare = d.subCategory === 'face-serum' || d.category === 'Health & Beauty';
+
+      if (isLaptopQuery && !isSkincareQuery) {
+        if (isDealLaptop) fitScore += 25;
+        else fitScore -= 80;
+      } else if (isSkincareQuery && !isLaptopQuery) {
+        if (isDealSkincare) fitScore += 15;
+        if (isDealLaptop) fitScore -= 80;
+      }
+
+      if (isDealLaptop && requestedRamGb) {
+        const ramSpec = String(specs['RAM'] || d.title || '').toLowerCase();
+        if (new RegExp(`\\b${requestedRamGb}\\s*gb\\b`, 'i').test(ramSpec)) {
+          fitScore += 35;
+        } else if (requestedRamGb >= 16 && /\b8\s*gb\b/i.test(ramSpec)) {
+          fitScore -= 30;
+        }
+      }
+      if (isDealLaptop && requestedSsdGb) {
+        const ssdSpec = String(specs['Storage'] || d.title || '').toLowerCase();
+        if (requestedSsdGb === 1024 ? /\b1\s*tb\b/i.test(ssdSpec) : new RegExp(`\\b${requestedSsdGb}\\s*gb\\b`, 'i').test(ssdSpec)) {
+          fitScore += 20;
+        }
+      }
+      if (isDealLaptop && wantsCodingOrWork) {
+        fitScore += 15;
+      }
+      if (isDealLaptop && wantsLightweight) {
+        const wMatch = String(specs['Weight'] || d.title || '').match(/(\d+(?:\.\d+)?)\s*kg/i);
+        if (wMatch && Number(wMatch[1]) <= 1.65) {
+          fitScore += 18;
         }
       }
       if (activePref && hay.includes(activePref)) {
@@ -8954,8 +9024,8 @@ export class AutonomousDealDiscoveryEngine {
 
     let verdict: FairPriceVerdict = 'INSUFFICIENT_HISTORY';
     let verdictSummary = mergedHistory.length > 0
-      ? `Price checked on ${checkedDateFormatted} — building price history (${mergedHistory.length} snapshot${mergedHistory.length === 1 ? '' : 's'} observed). Compare live store prices and ₹/ml unit cost below.`
-      : `Price checked on ${checkedDateFormatted} — building price history. Compare live store pricing and ₹/ml unit cost below.`;
+      ? `Price checked on ${checkedDateFormatted} — building price history (${mergedHistory.length} snapshot${mergedHistory.length === 1 ? '' : 's'} observed). ${isLaptopQuery && !isSkincareQuery ? 'Compare live store prices and verified hardware specs below.' : 'Compare live store prices and ₹/ml unit cost below.'}`
+      : `Price checked on ${checkedDateFormatted} — building price history. ${isLaptopQuery && !isSkincareQuery ? 'Compare live store pricing and verified hardware specs below.' : 'Compare live store pricing and ₹/ml unit cost below.'}`;
 
     if (hasSufficientHistory && primaryOption && estimatedFairPriceINR) {
       const pctVsFair = (primaryOption.effectivePriceINR - estimatedFairPriceINR) / estimatedFairPriceINR;
@@ -9022,21 +9092,28 @@ export class AutonomousDealDiscoveryEngine {
       const specs = (deal.evidenceJson?.rawSpecs || {}) as Record<string, string>;
       const unitVolumeMl = Number(deal.unitVolumeMl ?? deal.evidenceJson?.unitVolumeMl ?? 0) || null;
       const pricePerMlINR = computeCanonicalPricePerMl(deal);
-      const keyIngredients = specs['Key Ingredients'] || null;
-      const rawFragranceProfile = specs['Fragrance Profile'] || null;
-      const fragranceProfile = rawFragranceProfile || 'Not listed on merchant page';
-      const texture = specs['Texture & Finish'] || null;
+      const isLaptopCard = isLaptopDeal(deal);
+      const keyIngredients = isLaptopCard ? null : (specs['Key Ingredients'] || null);
+      const rawFragranceProfile = isLaptopCard ? null : (specs['Fragrance Profile'] || null);
+      const fragranceProfile = isLaptopCard ? null : (rawFragranceProfile || 'Not listed on merchant page');
+      const texture = isLaptopCard ? null : (specs['Texture & Finish'] || null);
       const hay = `${deal.title} ${deal.targetBuyerSegment || ''} ${deal.buyerFitSummary || ''} ${Object.values(specs).join(' ')}`.toLowerCase();
 
       const unverifiedRequirements: string[] = [];
-      if (wantsFragranceFree) {
+      if (!isLaptopCard && wantsFragranceFree) {
         const fpLower = String(rawFragranceProfile || '').toLowerCase();
         if (!fpLower || fpLower.includes('no fragrance note') || fpLower.includes('not listed')) {
           unverifiedRequirements.push(`Fragrance-free status: ${rawFragranceProfile ? rawFragranceProfile : 'Not listed on merchant page'}.`);
         }
       }
-      if (skinTypePref && !hay.includes(skinTypePref)) {
+      if (!isLaptopCard && skinTypePref && !hay.includes(skinTypePref)) {
         unverifiedRequirements.push(`Suitability for "${skinTypePref}" skin is not explicitly stated in the merchant listing.`);
+      }
+      if (isLaptopCard && requestedRamGb) {
+        const ramText = String(specs['RAM'] || deal.title || '');
+        if (!new RegExp(`\\b${requestedRamGb}\\s*gb\\b`, 'i').test(ramText)) {
+          unverifiedRequirements.push(`Requested ${requestedRamGb}GB RAM not matched (listed with ${specs['RAM'] || 'Not listed'}).`);
+        }
       }
       for (const avoided of avoidIngredients) {
         if (avoided !== 'fragrance' && !hay.includes(avoided)) {
@@ -9054,17 +9131,24 @@ export class AutonomousDealDiscoveryEngine {
       } else {
         reasonParts.push(`Verified merchant price ₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}`);
       }
-      if (unitVolumeMl && pricePerMlINR) {
-        reasonParts.push(`${unitVolumeMl} ml pack (₹${pricePerMlINR.toFixed(2)}/ml)`);
-      }
-      if (keyIngredients) {
-        reasonParts.push(`Actives: ${keyIngredients}`);
-      }
-      if (texture) {
-        reasonParts.push(`Texture: ${texture}`);
-      }
-      if (fragranceProfile) {
-        reasonParts.push(`Fragrance: ${fragranceProfile}`);
+      if (isLaptopCard) {
+        if (specs['Processor']) reasonParts.push(`CPU: ${specs['Processor']}`);
+        if (specs['RAM'] || specs['Storage']) reasonParts.push(`${specs['RAM'] || 'RAM Not listed'} / ${specs['Storage'] || 'Storage Not listed'}`);
+        if (specs['Display']) reasonParts.push(`Display: ${specs['Display']}`);
+        reasonParts.push(`Weight: ${specs['Weight'] || 'Not listed'}`);
+      } else {
+        if (unitVolumeMl && pricePerMlINR) {
+          reasonParts.push(`${unitVolumeMl} ml pack (₹${pricePerMlINR.toFixed(2)}/ml)`);
+        }
+        if (keyIngredients) {
+          reasonParts.push(`Actives: ${keyIngredients}`);
+        }
+        if (texture) {
+          reasonParts.push(`Texture: ${texture}`);
+        }
+        if (fragranceProfile) {
+          reasonParts.push(`Fragrance: ${fragranceProfile}`);
+        }
       }
 
       const rawReviews = Array.isArray((deal as any).youtubeReviews) && (deal as any).youtubeReviews.length > 0
@@ -9129,8 +9213,10 @@ export class AutonomousDealDiscoveryEngine {
         if (aMl !== bMl) return aMl - bMl;
         return Number(a.deal.currentPriceINR || 999999) - Number(b.deal.currentPriceINR || 999999);
       })[0];
+      const bestValueLabel: RecommendationCard['slotLabel'] =
+        computeCanonicalPricePerMl(bestValue.deal) !== null ? 'Best Value (₹/ml)' : 'Best Value';
       usedIds.add(bestValue.deal.id);
-      recommendations.push(buildCard(bestValue.deal, bestValue.fitScore, 'BEST_VALUE', 'Best Value (₹/ml)'));
+      recommendations.push(buildCard(bestValue.deal, bestValue.fitScore, 'BEST_VALUE', bestValueLabel));
     }
 
     const altPool = fitRankedDeals.filter(x => !usedIds.has(x.deal.id));

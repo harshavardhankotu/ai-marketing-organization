@@ -31,7 +31,7 @@ interface SkincareSerumBlueprint {
   buyerFitSummary: string;
   skipFitSummary: string;
   rawSpecs: Record<string, string>;
-  epc7d: number;
+  epc7d: number | null;
   confidenceScore: number;
   buyerValueScore: number;
   isFeatured?: boolean;
@@ -277,9 +277,9 @@ function buildSkincareDeal(spec: SkincareSerumBlueprint, opts: { isSeedFallback:
     economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
     verifiedCommissionRatePercent: spec.verifiedCommissionRatePercent,
     expectedCommissionYieldINR: yieldINR,
-    epc7d: spec.epc7d,
-    providerEpc7dINR: spec.epc7d,
-    expectedProfitPer100VisitorsINR: Number((yieldINR * 2).toFixed(2)),
+    epc7d: spec.epc7d ?? undefined,
+    providerEpc7dINR: spec.epc7d ?? null,
+    expectedProfitPer100VisitorsINR: spec.epc7d !== null ? Number((yieldINR * 2).toFixed(2)) : 0,
     rejectionReasons: [],
     createdAt: opts.timestamp,
     updatedAt: opts.timestamp,
@@ -309,9 +309,271 @@ function buildSkincareDeal(spec: SkincareSerumBlueprint, opts: { isSeedFallback:
  * Static offline fallback starter deals (explicitly flagged isSeedFallback: true
  * so unverified offline fallback renders SEED_SNAPSHOT + noindex honestly).
  */
+interface LaptopBlueprint {
+  id: string;
+  slug: string;
+  title: string;
+  brand: string;
+  merchant: string;
+  productUrl: string;
+  affiliateCampaignId: string;
+  verifiedCommissionRatePercent: number;
+  socialMediaPublishersAllowed: boolean;
+  currentPriceINR: number;
+  referencePriceINR: number;
+  targetBuyerSegment: string;
+  buyerFitSummary: string;
+  skipFitSummary: string;
+  rawSpecs: Record<string, string>;
+  epc7d: number | null;
+  confidenceScore: number;
+  buyerValueScore: number;
+  isFeatured?: boolean;
+}
+
+export const LAPTOP_SEED_PRICE_VERIFIED_AT = '2026-11-27T01:00:00.000Z';
+
+const VERIFIED_LAPTOP_BLUEPRINTS: LaptopBlueprint[] = [
+  {
+    id: 'deal_acer_aspire_lite_al15_41_ryzen5',
+    slug: 'acer-aspire-lite-al15-41-ryzen-5-7430u-16gb-512gb',
+    title: 'Acer Aspire Lite (AL15-41) — AMD Ryzen 5 7430U, 16GB RAM, 512GB SSD',
+    brand: 'Acer',
+    merchant: 'Acer India Official Store',
+    productUrl: 'https://store.acer.com/en-in/acer-aspire-lite-amd-ryzen-5-7430u-processor-16-gb-ram-512-gb-ssd-full-hd-ips-15-6-39-62-cm-windows-11-home-steel-gray-1-59-kg-al15-41-thin-and-light-laptop',
+    affiliateCampaignId: '4360',
+    verifiedCommissionRatePercent: 2.63,
+    socialMediaPublishersAllowed: true,
+    currentPriceINR: 43499,
+    referencePriceINR: 92999,
+    targetBuyerSegment: 'Indian students, coders, and office buyers looking for 16GB RAM + 512GB SSD under ₹50,000',
+    buyerFitSummary: 'Verified 16GB RAM + 512GB SSD + Full HD IPS 15.6" panel at 1.59 kg under ₹45,000.',
+    skipFitSummary: 'Skip if you need a dedicated GPU for heavy 3D gaming or a compact 14-inch chassis.',
+    epc7d: null,
+    confidenceScore: 95,
+    buyerValueScore: 96,
+    isFeatured: true,
+    rawSpecs: {
+      'Sub-Category': 'Laptop (Thin & Light)',
+      'Processor': 'AMD Ryzen 5 7430U',
+      'RAM': '16 GB',
+      'Storage': '512 GB SSD',
+      'Display': '15.6" (39.62 cm) Full HD IPS',
+      'Weight': '1.59 kg',
+      'Operating System': 'Windows 11 Home'
+    }
+  },
+  {
+    id: 'deal_acer_aspire_lite_al15_52h_i5',
+    slug: 'acer-aspire-lite-al15-52h-core-i5-12450h-16gb-512gb',
+    title: 'Acer Aspire Lite (AL15-52H) — Intel Core i5-12450H, 16GB RAM, 512GB SSD',
+    brand: 'Acer',
+    merchant: 'Acer India Official Store',
+    productUrl: 'https://store.acer.com/en-in/acer-aspire-lite-12th-gen-intel-core-i5-12450h-processor-laptop-windows-11-home-16-gb-ram-512-gb-ssd-al15-52h-with-39-6-cm-15-6-full-hd-ips-display-pure-silver-1-7-kg-un-347si-009',
+    affiliateCampaignId: '4360',
+    verifiedCommissionRatePercent: 2.63,
+    socialMediaPublishersAllowed: true,
+    currentPriceINR: 49999,
+    referencePriceINR: 49999,
+    targetBuyerSegment: 'Developers and multitaskers under ₹55,000 wanting an H-series Intel i5 with 16GB RAM',
+    buyerFitSummary: '12th Gen Intel Core i5-12450H + 16GB RAM + 512GB SSD + Full HD IPS display and backlit keyboard.',
+    skipFitSummary: 'Heavier at 1.70 kg; skip if ultra-lightweight travel portability is your top priority.',
+    epc7d: null,
+    confidenceScore: 94,
+    buyerValueScore: 94,
+    isFeatured: true,
+    rawSpecs: {
+      'Sub-Category': 'Laptop (Coding & Productivity)',
+      'Processor': 'Intel Core i5-12450H (12th Gen)',
+      'RAM': '16 GB',
+      'Storage': '512 GB SSD',
+      'Display': '15.6" (39.6 cm) Full HD IPS',
+      'Weight': '1.70 kg',
+      'Keyboard': 'Backlit Keyboard',
+      'Operating System': 'Windows 11 Home'
+    }
+  },
+  {
+    id: 'deal_acer_aspire_lite_al15_42_ryzen3',
+    slug: 'acer-aspire-lite-al15-42-ryzen-3-7330u-8gb-256gb',
+    title: 'Acer Aspire Lite (AL15-42) — AMD Ryzen 3 7330U, 8GB RAM, 256GB SSD',
+    brand: 'Acer',
+    merchant: 'Acer India Official Store',
+    productUrl: 'https://store.acer.com/en-in/acer-aspire-lite-amd-ryzen-3-7330u-series-processor-windows-11-home-8gb-ram-256gb-ssd-15-6-inches-39-62-cm-gray-al15-42-backlit-keyboard-1-65-kg-thin-and-light-laptop',
+    affiliateCampaignId: '4360',
+    verifiedCommissionRatePercent: 2.63,
+    socialMediaPublishersAllowed: true,
+    currentPriceINR: 46999,
+    referencePriceINR: 79999,
+    targetBuyerSegment: 'Everyday browsing, documents, and study users under ₹50,000',
+    buyerFitSummary: 'AMD Ryzen 3 7330U with backlit keyboard at 1.65 kg, in stock on Acer India Store.',
+    skipFitSummary: 'Comes with 8GB RAM and 256GB SSD — skip if you need 16GB RAM or 512GB SSD out of the box.',
+    epc7d: null,
+    confidenceScore: 93,
+    buyerValueScore: 86,
+    rawSpecs: {
+      'Sub-Category': 'Laptop (Everyday & Student)',
+      'Processor': 'AMD Ryzen 3 7330U',
+      'RAM': '8 GB',
+      'Storage': '256 GB SSD',
+      'Display': '15.6" (39.62 cm)',
+      'Weight': '1.65 kg',
+      'Keyboard': 'Backlit Keyboard',
+      'Operating System': 'Windows 11 Home'
+    }
+  },
+  {
+    id: 'deal_acer_aspire_lite_al15_53_i3',
+    slug: 'acer-aspire-lite-al15-53-core-i3-1315u-8gb-256gb',
+    title: 'Acer Aspire Lite (AL15-53) — Intel Core i3-1315U, 8GB RAM, 256GB SSD',
+    brand: 'Acer',
+    merchant: 'Acer India Official Store',
+    productUrl: 'https://store.acer.com/en-in/acer-aspire-lite-intel-core-i3-1315u-processor-windows-11-home-ms-office-8-gb-ram-256-gb-ssd-15-6-39-62-cm-display-steel-gray-al15-53-1-59-kg-thin-and-light-laptop',
+    affiliateCampaignId: '4360',
+    verifiedCommissionRatePercent: 2.63,
+    socialMediaPublishersAllowed: true,
+    currentPriceINR: 54999,
+    referencePriceINR: 90999,
+    targetBuyerSegment: 'Office and student users needing pre-installed MS Office at 1.59 kg',
+    buyerFitSummary: '13th Gen Intel Core i3-1315U with Windows 11 Home + MS Office at 1.59 kg.',
+    skipFitSummary: '8GB RAM / 256GB SSD at ₹54,999 — 16GB Ryzen 5/i5 alternatives offer more RAM/storage.',
+    epc7d: null,
+    confidenceScore: 92,
+    buyerValueScore: 82,
+    rawSpecs: {
+      'Sub-Category': 'Laptop (Office & Student)',
+      'Processor': 'Intel Core i3-1315U',
+      'RAM': '8 GB',
+      'Storage': '256 GB SSD',
+      'Display': '15.6" (39.62 cm)',
+      'Weight': '1.59 kg',
+      'Operating System': 'Windows 11 Home + MS Office'
+    }
+  },
+  {
+    id: 'deal_acer_aspire_pro_ap14_55_ultra5',
+    slug: 'acer-aspire-pro-ap14-55-core-ultra-5-125h-8gb-512gb',
+    title: 'Acer Aspire Pro (AP14-55) — Intel Core Ultra 5 125H, 8GB RAM, 512GB SSD (14")',
+    brand: 'Acer',
+    merchant: 'Acer India Official Store',
+    productUrl: 'https://store.acer.com/en-in/acer-aspire-pro-intel-core-ultra-5-125h-processors-windows-11-home-8-gb-ram-512-gb-ssd-14-35-56-cm-display-light-silver-ap14-55-1-3-kg-thin-and-light-laptop',
+    affiliateCampaignId: '4360',
+    verifiedCommissionRatePercent: 2.63,
+    socialMediaPublishersAllowed: true,
+    currentPriceINR: 69999,
+    referencePriceINR: 114999,
+    targetBuyerSegment: 'Lightweight 14-inch business and travel buyers under ₹70,000',
+    buyerFitSummary: 'Ultra-portable 1.30 kg 14-inch chassis with Intel Core Ultra 5 125H, 512GB SSD, and MS Office.',
+    skipFitSummary: 'Listed with 8GB RAM at ₹69,999 — skip if you strictly need 16GB RAM out of the box.',
+    epc7d: null,
+    confidenceScore: 93,
+    buyerValueScore: 88,
+    rawSpecs: {
+      'Sub-Category': 'Laptop (Ultra-Portable 14-inch)',
+      'Processor': 'Intel Core Ultra 5 125H',
+      'RAM': '8 GB',
+      'Storage': '512 GB SSD',
+      'Display': '14" (35.56 cm)',
+      'Weight': '1.30 kg',
+      'Operating System': 'Windows 11 Home + MS Office'
+    }
+  }
+];
+
+function buildLaptopDeal(spec: LaptopBlueprint, opts: { isSeedFallback: boolean; timestamp: string }): NormalizedDeal {
+  const discountPct = spec.referencePriceINR > spec.currentPriceINR
+    ? Math.round(((spec.referencePriceINR - spec.currentPriceINR) / spec.referencePriceINR) * 100)
+    : 0;
+  const yieldINR = Number(((spec.currentPriceINR * spec.verifiedCommissionRatePercent) / 100).toFixed(2));
+  const sourceHost = new URL(spec.productUrl).hostname.replace(/^www\./, '');
+
+  return {
+    id: spec.id,
+    slug: spec.slug,
+    canonicalSlug: spec.slug,
+    dealKind: 'PRODUCT',
+    discountBadge: discountPct > 0 ? `${discountPct}% OFF` : undefined,
+    title: spec.title,
+    brand: spec.brand,
+    merchant: spec.merchant,
+    category: 'Electronics',
+    subCategory: 'laptop',
+    sectorCode: 'SECTOR_B_ELECTRONICS',
+    productUrl: spec.productUrl,
+    targetBuyerSegment: spec.targetBuyerSegment,
+    buyerFitSummary: spec.buyerFitSummary,
+    skipFitSummary: spec.skipFitSummary,
+    affiliateNetwork: 'CUELINKS',
+    affiliateCampaignId: spec.affiliateCampaignId,
+    socialMediaPublishersAllowed: spec.socialMediaPublishersAllowed,
+    currentPriceINR: spec.currentPriceINR,
+    currency: 'INR',
+    referencePriceINR: spec.referencePriceINR,
+    claimedDiscountPercent: discountPct,
+    verifiedDiscountPercent: discountPct,
+    discountVerificationType: discountPct > 0 ? 'MERCHANT_LISTED_MRP' : 'UNCONFIRMED',
+    availability: 'IN_STOCK',
+    geographicRestrictions: ['IN'],
+    isSeedFallback: opts.isSeedFallback,
+    observedAt: opts.timestamp,
+    lastCheckedAt: opts.timestamp,
+    lastVerifiedAt: opts.timestamp,
+    sourceUrl: spec.productUrl,
+    sourceDomain: sourceHost,
+    sourceType: 'RETAILER_BRAND',
+    verificationStatus: opts.isSeedFallback ? 'VERIFIED' : 'AFFILIATE_VERIFIED',
+    confidenceScore: spec.confidenceScore,
+    buyerValueScore: spec.buyerValueScore,
+    isMonetizable: true,
+    productVerified: true,
+    affiliateVerified: true,
+    isFeatured: Boolean(spec.isFeatured),
+    catalogSlot: spec.isFeatured ? 'FEATURED' : 'ACTIVE',
+    evolutionStatus: spec.isFeatured ? 'RISING_WINNER' : 'FRESH_EXPLORATION',
+    exposureTier: 'ACTIVE_ENGAGED',
+    opportunityLabel: 'VERIFIED_MERCHANT_PROMOTION',
+    economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
+    verifiedCommissionRatePercent: spec.verifiedCommissionRatePercent,
+    expectedCommissionYieldINR: yieldINR,
+    epc7d: spec.epc7d ?? undefined,
+    providerEpc7dINR: spec.epc7d ?? null,
+    expectedProfitPer100VisitorsINR: spec.epc7d !== null ? Number((yieldINR * 2).toFixed(2)) : 0,
+    rejectionReasons: [],
+    createdAt: opts.timestamp,
+    updatedAt: opts.timestamp,
+    evidenceJson: {
+      subCategory: 'laptop',
+      buyerFitSummary: spec.buyerFitSummary,
+      skipFitSummary: spec.skipFitSummary,
+      socialMediaPublishersAllowed: spec.socialMediaPublishersAllowed,
+      affiliateCampaignId: spec.affiliateCampaignId,
+      affiliateNetwork: 'CUELINKS',
+      rawSpecs: spec.rawSpecs,
+      sources: [spec.productUrl],
+      verificationLogs: [
+        `Verified ₹${spec.currentPriceINR} on ${sourceHost}; Cuelinks Campaign ${spec.affiliateCampaignId} (Channel 331585)`
+      ],
+      priceVerifiedAt: opts.timestamp,
+      priceHistory: [{ price: spec.currentPriceINR, observedAt: opts.timestamp }],
+      isSeedFallback: opts.isSeedFallback
+    }
+  };
+}
+
 export function createHighIntentStarterDeals(): NormalizedDeal[] {
-  return VERIFIED_SKINCARE_SERUM_BLUEPRINTS.map(spec =>
-    buildSkincareDeal(spec, { isSeedFallback: true, timestamp: STATIC_SEED_PRICE_VERIFIED_AT })
+  return [
+    ...VERIFIED_SKINCARE_SERUM_BLUEPRINTS.map(spec =>
+      buildSkincareDeal(spec, { isSeedFallback: true, timestamp: STATIC_SEED_PRICE_VERIFIED_AT })
+    ),
+    ...VERIFIED_LAPTOP_BLUEPRINTS.map(spec =>
+      buildLaptopDeal(spec, { isSeedFallback: true, timestamp: LAPTOP_SEED_PRICE_VERIFIED_AT })
+    )
+  ];
+}
+
+export function createVerifiedLiveLaptops(verifiedAtIso: string = LAPTOP_SEED_PRICE_VERIFIED_AT): NormalizedDeal[] {
+  return VERIFIED_LAPTOP_BLUEPRINTS.map(spec =>
+    buildLaptopDeal(spec, { isSeedFallback: false, timestamp: verifiedAtIso })
   );
 }
 

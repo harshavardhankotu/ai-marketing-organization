@@ -391,6 +391,20 @@ interface HubSeedDefinition {
 
 const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
   {
+    intentSlug: 'laptops-under-60000-india',
+    title: 'Best Laptops Under ₹60,000 in India — Verified Specs & Store Prices',
+    h1: 'Best Laptops Under ₹60,000 in India (RAM, CPU & Weight Compared)',
+    description: 'Compare verified Acer India laptops under ₹60,000 (and up to ₹70,000) by CPU, 16GB vs 8GB RAM, SSD capacity, display panel, and weight with upfront #Affiliate disclosures.',
+    priceCapLabel: 'Under ₹60,000',
+    categoryLabel: 'Laptops & PCs',
+    maxPriceINR: 60000,
+    predicate: (d, text, price) => {
+      const sub = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase();
+      const isLaptop = sub === 'laptop' || /\b(laptop|aspire|swift|nitro)\b/i.test(text);
+      return price > 0 && price <= 60000 && isLaptop;
+    }
+  },
+  {
     intentSlug: 'niacinamide-serums-india',
     title: 'Best Niacinamide Serums in India — Cost per ml & Ingredient Comparison',
     h1: 'Best Niacinamide Face Serums in India (Cost per ml & Formula Check)',
@@ -1383,7 +1397,7 @@ export class StaticSiteGenerator {
       <form onsubmit="handleFairPriceDealsSsr(event)" style="display: grid; gap: 0.65rem;">
         <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
           <input type="text" id="fp-query-deals-ssr" required placeholder="e.g. niacinamide serum under 800, oily skin, avoid fragrance" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
-          <input type="number" id="fp-budget-deals-ssr" min="100" max="50000" placeholder="Max ₹" style="width: 110px; padding: 0.7rem 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
+          <input type="number" id="fp-budget-deals-ssr" min="100" max="100000" placeholder="Max ₹" style="width: 110px; padding: 0.7rem 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
           <button type="submit" id="fp-btn-deals-ssr" style="background: #06b6d4; color: #020617; font-weight: 700; border: none; border-radius: 8px; padding: 0.7rem 1.25rem; cursor: pointer; font-size: 0.88rem;">Match Products</button>
         </div>
         <div style="display: flex; gap: 0.85rem; flex-wrap: wrap; align-items: center; font-size: 0.8rem; color: #cbd5e1;">
@@ -2274,13 +2288,18 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
       const rail1 = appendAttributionParams(`${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect`, { utmSource: 'best_hub_table', placement: 'best_hub_table' }, options?.attribution);
       const rail2 = appendAttributionParams(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`, { placement: 'best_hub_table_amazon' }, options?.attribution);
       const hasMrp = Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0);
+      const isLaptopRow = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase() === 'laptop' ||
+        (/\b(laptop|notebook|ultrabook|aspire|swift|nitro)\b/i.test(String(d?.title || '')) && !/\b(earbud|keyboard\s*cover|mouse|serum)\b/i.test(String(d?.title || '')));
+      const rowSpecsHtml = isLaptopRow
+        ? `<div style="font-size:0.74rem;color:#cbd5e1;margin-top:0.18rem;">Processor: ${this.escapeHtml(specs['Processor'] || 'Not listed')} &bull; RAM: ${this.escapeHtml(specs['RAM'] || 'Not listed')} &bull; Storage: ${this.escapeHtml(specs['Storage'] || 'Not listed')} &bull; Display: ${this.escapeHtml(specs['Display'] || 'Not listed')} &bull; Weight: ${this.escapeHtml(specs['Weight'] || 'Not listed')}</div>`
+        : (specs['Key Ingredients'] ? `<div style="font-size:0.74rem;color:#cbd5e1;margin-top:0.18rem;">Actives: ${this.escapeHtml(specs['Key Ingredients'])}</div>` : '');
       return `
       <tr>
         <td style="font-weight:700;color:#94a3b8;font-variant-numeric:tabular-nums;">#${idx + 1}</td>
         <td>
           <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;text-decoration:none;display:block;">${this.escapeHtml(d.title)}</a>
-          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${unitInfo.pricePerMlLabel ? ` &bull; <strong style="color:#67e8f9;">${this.escapeHtml(unitInfo.pricePerMlLabel)}</strong>` : ''}${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
-          ${specs['Key Ingredients'] ? `<div style="font-size:0.74rem;color:#cbd5e1;margin-top:0.18rem;">Actives: ${this.escapeHtml(specs['Key Ingredients'])}</div>` : ''}
+          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${!isLaptopRow && unitInfo.pricePerMlLabel ? ` &bull; <strong style="color:#67e8f9;">${this.escapeHtml(unitInfo.pricePerMlLabel)}</strong>` : ''}${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
+          ${rowSpecsHtml}
           ${observedAt ? `<div style="font-size:0.74rem;color:#64748b;margin-top:0.15rem;">Checked ${this.escapeHtml(observedAt)}</div>` : ''}
         </td>
         <td style="font-variant-numeric:tabular-nums;">
