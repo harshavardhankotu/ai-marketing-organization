@@ -53,7 +53,7 @@ describe('Stage 4 — Affiliate Redirect & Atomic Parameterized Attribution Test
       approved: false
     });
 
-    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect');
+    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
     expect(res.status).toBe(503);
     const body = await res.text();
     expect(body).toMatch(/channel.*not.*verified|suppressed/i);
@@ -70,7 +70,7 @@ describe('Stage 4 — Affiliate Redirect & Atomic Parameterized Attribution Test
       channel_id: 12345
     });
 
-    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect');
+    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
     expect(res.status).toBe(503);
     const body = await res.text();
     expect(body).toMatch(/monetization.*unavailable|conversion failed|suppressed/i);
@@ -88,7 +88,7 @@ describe('Stage 4 — Affiliate Redirect & Atomic Parameterized Attribution Test
       tracking_url: 'https://attacker.evil.com/phish'
     });
 
-    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect');
+    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
     expect(res.status).toBe(503);
   });
 
@@ -105,7 +105,7 @@ describe('Stage 4 — Affiliate Redirect & Atomic Parameterized Attribution Test
     });
     vi.spyOn(d1Repo, 'executeBatch').mockRejectedValue(new Error('D1 Persistence Down'));
 
-    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect');
+    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
     expect(res.status).toBe(503);
     const body = await res.text();
     expect(body).toMatch(/persistence failed|redirect suppressed/i);
@@ -137,7 +137,7 @@ describe('Stage 4 — Affiliate Redirect & Atomic Parameterized Attribution Test
       )
     `).run();
 
-    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect?placement=homepage_hero');
+    const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect?placement=homepage_hero', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('https://linksredirect.com/?cid=12345&subid=clk_test_valid');
   });

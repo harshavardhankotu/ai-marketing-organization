@@ -353,7 +353,7 @@ describe('PR #97: Coherent Storefront, /demo, Security Hardening, D1 Read Contai
       expect(CommercialSchedulePolicy.getIdempotencyKey('affiliate_offer_reconciliation', morning)).toContain('_0900_');
       expect(CommercialSchedulePolicy.getIdempotencyKey('affiliate_offer_reconciliation', afternoon)).toContain('_0900_');
       expect(CommercialSchedulePolicy.getIdempotencyKey('affiliate_offer_reconciliation', evening)).toContain('_2100_');
-      expect(CommercialSchedulePolicy.getCronCatchupWorkflowIds(morning).length).toBeLessThanOrEqual(5);
+      expect(CommercialSchedulePolicy.getCronCatchupWorkflowIds(morning).length).toBeLessThanOrEqual(6);
       expect(CommercialSchedulePolicy.getCronCatchupWorkflowIds(evening).length).toBeLessThanOrEqual(5);
 
       const doctorRes = await AutonomousSystemDoctor.getInstance().repairOutreachChannelsAndQualifyTargets(undefined, { force: true });

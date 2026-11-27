@@ -2423,7 +2423,9 @@ export class AutomationRegistryEngine {
 
       case 'seasonal_demand_research': {
         const { SeasonalDemandEngine } = await import('../commission/seasonal-demand-engine.js');
-        const report = await SeasonalDemandEngine.getInstance().runSeasonalDemandCycle();
+        const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+        const eligibleRes = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals();
+        const report = await SeasonalDemandEngine.getInstance().runSeasonalDemandCycle(eligibleRes.deals);
         const hasFindings = report.opportunities.length > 0;
         return {
           status: hasFindings ? 'COMPLETED_WITH_FINDINGS' : 'COMPLETED_NO_FINDINGS',

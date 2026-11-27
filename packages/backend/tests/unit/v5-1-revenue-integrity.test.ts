@@ -138,7 +138,7 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
 
       vi.spyOn(dealEngine, 'resolveDeal').mockResolvedValue(dealWithoutCampaign as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_missing_camp/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_missing_camp/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/missing verified campaign mapping/i);
@@ -161,7 +161,7 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
 
       vi.spyOn(dealEngine, 'resolveDeal').mockResolvedValue(dealWithUnknownCategory as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_unknown_sector/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_unknown_sector/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/unverified sector mapping/i);
@@ -188,7 +188,7 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
         approved: false
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_valid_deal_channel_test/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_valid_deal_channel_test/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/temporarily unavailable.*unmonetized fallback suppressed/i);
@@ -232,7 +232,7 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
       });
       vi.spyOn(d1Repo, 'executeBatch').mockRejectedValue(new Error('D1 Storage Engine Unreachable'));
 
-      const res = await app.request('/api/v1/public/deals/deal_db_fail_test/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_db_fail_test/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/Attribution persistence failed; redirect suppressed/i);

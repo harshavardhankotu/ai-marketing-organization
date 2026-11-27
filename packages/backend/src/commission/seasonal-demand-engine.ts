@@ -139,7 +139,7 @@ export const SEEDED_INDIAN_FESTIVALS: FestivalEvent[] = [
     name: 'Black Friday & Cyber Week India',
     slug: 'black-friday-cyber-week-india',
     eventDate: '2026-11-27',
-    category: 'SOFTWARE_SAAS',
+    category: 'Electronics, Health & Beauty, Fashion',
     shoppingLeadDays: 14,
     region: 'All India',
     sourceUrl: 'https://india.gov.in/calendar',
@@ -198,8 +198,18 @@ export class FestivalCalendar {
       try {
         if (isProduction()) {
           await this.d1Repo.executeWrite('seasonal_festivals', sql, params);
+          if (fest.id === 'fest_black_friday_india_2026') {
+            await this.d1Repo.executeWrite(
+              'seasonal_festivals',
+              `UPDATE seasonal_festivals SET category = ? WHERE id = ? AND category = 'SOFTWARE_SAAS'`,
+              [fest.category, fest.id]
+            );
+          }
         } else {
           getDb().prepare(sql).run(...params);
+          if (fest.id === 'fest_black_friday_india_2026') {
+            getDb().prepare(`UPDATE seasonal_festivals SET category = ? WHERE id = ? AND category = 'SOFTWARE_SAAS'`).run(fest.category, fest.id);
+          }
         }
       } catch (err: any) {
         console.warn(`[FestivalCalendar] Notice seeding ${fest.id}: ${err.message}`);
@@ -319,22 +329,34 @@ export class DealOpportunityMatcher {
       const daysUntil = Math.max(0, Math.ceil((eventMs - nowMs) / (24 * 3600 * 1000)));
 
       // Find matching verified deals in category or general shopping
-      const matchingDeals = activeDeals.filter(d => {
-        // Exclude unverified or expired deals
-        if (d.verificationStatus && d.verificationStatus !== 'VERIFIED' && d.verificationStatus !== 'VERIFIED_WITH_CONDITIONS') {
+      const matchingDeals = activeDeals.filter((d: any) => {
+        const status = String(d.verificationStatus || '').toUpperCase();
+        // Accept AFFILIATE_VERIFIED alongside VERIFIED / VERIFIED_WITH_CONDITIONS; exclude unverified/expired/OOS
+        if (status && status !== 'VERIFIED' && status !== 'VERIFIED_WITH_CONDITIONS' && status !== 'AFFILIATE_VERIFIED') {
           return false;
+        }
+        if (d.isSeedFallback === true || String(d.availability || '').toUpperCase() === 'OUT_OF_STOCK') {
+          return false;
+        }
+        const isCoupon = String(d.dealKind || '').toUpperCase() === 'COUPON' || Boolean(d.couponCode && !d.currentPriceINR);
+        if (!isCoupon && status === 'AFFILIATE_VERIFIED') {
+          const av = String(d.availability || '').toUpperCase();
+          if (av && av !== 'IN_STOCK') return false;
+          if (!d.lastVerifiedAt && !d.lastCheckedAt && !d.observedAt) return false;
         }
         if (d.expiryDate && new Date(d.expiryDate).getTime() < nowMs) {
           return false;
         }
         const dealCat = (d.category || '').toUpperCase();
-        const festCat = fest.category.toUpperCase();
+        const festCats = fest.category.toUpperCase().split(',').map(s => s.trim()).filter(Boolean);
 
-        if (festCat === 'GENERAL_SHOPPING') return true;
-        if (festCat === 'GOLD_SILVER_BULLION_JEWELLERY' && (dealCat.includes('GOLD') || dealCat.includes('SILVER') || dealCat.includes('JEWEL') || dealCat.includes('BULLION') || dealCat.includes('COIN'))) return true;
-        if (dealCat.includes(festCat) || festCat.includes(dealCat)) return true;
-        if (festCat === 'TRAVEL' && (dealCat.includes('FLIGHT') || dealCat.includes('HOTEL') || dealCat.includes('TRAVEL'))) return true;
-        if (festCat === 'CONSUMER_ELECTRONICS' && (dealCat.includes('ELECTRONIC') || dealCat.includes('GADGET') || dealCat.includes('TECH'))) return true;
+        for (const festCat of festCats) {
+          if (festCat === 'GENERAL_SHOPPING') return true;
+          if (festCat === 'GOLD_SILVER_BULLION_JEWELLERY' && (dealCat.includes('GOLD') || dealCat.includes('SILVER') || dealCat.includes('JEWEL') || dealCat.includes('BULLION') || dealCat.includes('COIN'))) return true;
+          if (dealCat && (dealCat.includes(festCat) || festCat.includes(dealCat))) return true;
+          if (festCat === 'TRAVEL' && (dealCat.includes('FLIGHT') || dealCat.includes('HOTEL') || dealCat.includes('TRAVEL'))) return true;
+          if (festCat === 'CONSUMER_ELECTRONICS' && (dealCat.includes('ELECTRONIC') || dealCat.includes('GADGET') || dealCat.includes('TECH'))) return true;
+        }
         return false;
       });
 

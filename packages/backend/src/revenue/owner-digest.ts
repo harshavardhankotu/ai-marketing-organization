@@ -237,6 +237,12 @@ export interface OwnerTodayDigest {
     createdAt: string;
   }>;
   autopilotStatus?: OutreachAutopilotHealth;
+  commerceAutopilotStatus?: {
+    lastCommercialWorkflow: string | null;
+    lastRunStatus: string;
+    freshAffiliateVerifiedCount: number | null;
+    budgetStoppedLastCycle: boolean;
+  };
   arosControlCenter?: ArosControlCenterSummary;
   sitefixFunnelAttribution?: SiteFixFunnelAttributionSummary;
 }
@@ -450,15 +456,16 @@ export class OwnerDigestService {
     } catch {}
 
     try {
-      const leadRow = db.prepare(`SELECT COUNT(*) as c FROM prospects WHERE created_at LIKE ?`).get(`${yesterdayStr}%`) as any;
+      const leadRow = db.prepare(`SELECT COUNT(*) as c FROM platform_prospects WHERE created_at LIKE ?`).get(`${yesterdayStr}%`) as any;
       if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
     } catch {}
 
     try {
+      const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
       const payRow = db.prepare(`
         SELECT SUM(amount_inr) as total FROM revenue_records
         WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
-          AND verified = 1 AND is_test = 0 AND timestamp LIKE ?
+          AND verified = 1${hasIsTest ? ' AND is_test = 0' : ''} AND timestamp LIKE ?
       `).get(`${yesterdayStr}%`) as any;
       if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
         payments = payRow.total;
@@ -650,6 +657,24 @@ export class OwnerDigestService {
 
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
     const sitefixFunnelAttribution = getSiteFixFunnelAttributionSummarySync();
+    let lastJobRow: any = null;
+    try {
+      lastJobRow = db.prepare(
+        `SELECT workflow_id, status FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      ).get();
+    } catch {}
+    let freshDealsRow: any = null;
+    try {
+      freshDealsRow = db.prepare(
+        `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
+      ).get();
+    } catch {}
+    const commerceAutopilotStatus = {
+      lastCommercialWorkflow: lastJobRow?.workflow_id ? String(lastJobRow.workflow_id) : null,
+      lastRunStatus: lastJobRow?.status ? String(lastJobRow.status) : 'UNAVAILABLE',
+      freshAffiliateVerifiedCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
+      budgetStoppedLastCycle: false
+    };
 
     return {
       date: todayStr,
@@ -661,6 +686,7 @@ export class OwnerDigestService {
       pendingOutreachDrafts,
       topHighTriggerProspects,
       autopilotStatus,
+      commerceAutopilotStatus,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
@@ -755,6 +781,29 @@ export class OwnerDigestService {
    * In non-production, delegates to synchronous generateDigest.
    * In production, queries Cloudflare D1 as the single source of truth without falling back to local SQLite.
    */
+  private hasLocalColumn(tableName: string, columnName: string): boolean {
+    try {
+      const cols = getDb().prepare(`PRAGMA table_info(${tableName})`).all() as any[];
+      return cols.some(c => String(c?.name || '').toLowerCase() === columnName.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
+  private async hasTable(tableName: string): Promise<boolean> {
+    try {
+      const sql = `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`;
+      if (isProduction() && !process.env.VITEST) {
+        const row = await this.d1Repo.queryOne<{ name: string }>('sqlite_master', sql, [tableName]);
+        return Boolean(row?.name);
+      }
+      const row = getDb().prepare(sql).get(tableName) as any;
+      return Boolean(row?.name);
+    } catch {
+      return false;
+    }
+  }
+
   private async queryCcOne<T = any>(table: string, sql: string, params: any[] = []): Promise<T | null> {
     try {
       if (isProduction() && !process.env.VITEST) {
@@ -843,7 +892,7 @@ export class OwnerDigestService {
       ),
       this.queryCcOne<any>(
         'referral_click_events',
-        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot')) AND (click_status IS NULL OR click_status NOT IN ('DIAGNOSTIC', 'TEST')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
       ),
       this.queryCcOne<any>(
         'platform_prospects',
@@ -862,9 +911,13 @@ export class OwnerDigestService {
         'revenue_records',
         `SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')`
       ),
-      this.queryCcOne<any>(
-        'cost_ledger',
-        `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+      this.hasTable('cost_ledger').then(exists =>
+        exists
+          ? this.queryCcOne<any>(
+              'cost_ledger',
+              `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+            )
+          : null
       ),
       this.queryCcAll<any>(
         'manual_upi_claims',
@@ -1465,8 +1518,8 @@ export class OwnerDigestService {
 
     try {
       const leadRow = await this.d1Repo.queryOne<{ c: number }>(
-        'prospects',
-        `SELECT COUNT(*) as c FROM prospects WHERE created_at LIKE ?`,
+        'platform_prospects',
+        `SELECT COUNT(*) as c FROM platform_prospects WHERE created_at LIKE ?`,
         [`${yesterdayStr}%`]
       );
       if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
@@ -1477,7 +1530,7 @@ export class OwnerDigestService {
         'revenue_records',
         `SELECT SUM(amount_inr) as total FROM revenue_records
          WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
-           AND verified = 1 AND is_test = 0 AND timestamp LIKE ?`,
+           AND verified = 1 AND timestamp LIKE ?`,
         [`${yesterdayStr}%`]
       );
       if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
@@ -1671,6 +1724,22 @@ export class OwnerDigestService {
     ]);
     const topHighTriggerProspects = this.scoreAndRankProspectAudits(prodAudits, prodProspects, prodContacts, 5);
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
+    const lastJobRow = await this.queryCcOne<any>(
+      'automation_jobs',
+      `SELECT workflow_id, status FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+    );
+    const freshDealsRow = await this.queryCcOne<any>(
+      'public_deals',
+      `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
+    );
+    const { D1Client } = await import('../db/d1-client.js');
+    const cycleUsage = D1Client.getInstance().getCycleUsage();
+    const commerceAutopilotStatus = {
+      lastCommercialWorkflow: lastJobRow?.workflow_id ? String(lastJobRow.workflow_id) : null,
+      lastRunStatus: lastJobRow?.status ? String(lastJobRow.status) : 'UNAVAILABLE',
+      freshAffiliateVerifiedCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
+      budgetStoppedLastCycle: Boolean(cycleUsage?.budgetExceeded)
+    };
 
     return {
       date: todayStr,
@@ -1682,6 +1751,7 @@ export class OwnerDigestService {
       pendingOutreachDrafts,
       topHighTriggerProspects,
       autopilotStatus,
+      commerceAutopilotStatus,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },

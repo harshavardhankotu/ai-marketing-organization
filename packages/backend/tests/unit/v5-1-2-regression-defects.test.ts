@@ -81,7 +81,7 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
         campaign: null // Null campaign object
       } as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_test_phase1/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_test_phase1/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toContain('campaign ID mismatch or missing campaign object');
@@ -102,7 +102,7 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
         campaign: { id: 9999, name: 'Unrelated Campaign' }
       } as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_test_phase1/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_test_phase1/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toContain('campaign ID mismatch');
@@ -134,7 +134,7 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
         return null;
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_test_phase1/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_test_phase1/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toContain('partner offer not active or missing');

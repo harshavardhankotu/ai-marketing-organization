@@ -195,6 +195,7 @@ export class CommercialSchedulePolicy {
     const isMorningBucket = ist.hour >= 9 && ist.hour < 21;
     if (isMorningBucket) {
       return [
+        'seasonal_demand_research',
         'affiliate_offer_reconciliation',
         'daily_market_demand_research',
         'new_inquiry_processing',

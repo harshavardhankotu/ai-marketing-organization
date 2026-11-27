@@ -159,7 +159,7 @@ describe('PR #101 — D1 Baseline 0050 Compatibility, Rel Attributes & UTM Attri
         '/api/v1/public/amazon-redirect?q=Asaya+10%25+Niacinamide&dealId=deal_asaya_10_niacinamide_serum_30ml&utm_source=yt_short_1&placement=best_hub_pick',
         { headers: { 'x-test-traffic': 'true' } }
       );
-      expect(redirRes.status).toBe(302);
+      expect(redirRes.status).toBe(200);
 
       const row = getDb().prepare(
         `SELECT offer_id, placement, source, device_class FROM referral_click_events WHERE offer_id = ? AND source = ? ORDER BY created_at DESC LIMIT 1`

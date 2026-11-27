@@ -243,7 +243,7 @@ describe('Stage J: Live Cuelinks /offers.json, 72h Evolutionary Rotation, Storef
     const redirectClientSpy = vi.spyOn(CuelinksV3Client, 'getInstance').mockReturnValue(client);
     const redirectRes = await app.request(`/api/v1/public/deals/${encodeURIComponent(groomingDeal.id)}/redirect?ab_exp=${STOREFRONT_DEAL_CTA_EXP_ID}&ab_variant=treatment`, {
       headers: {
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36'
       }
     });
     if (redirectRes.status !== 302) {
@@ -525,11 +525,7 @@ describe('Stage J: Live Cuelinks /offers.json, 72h Evolutionary Rotation, Storef
     expect(amazonPartner?.network).toBe('AMAZON_IN');
     expect(amazonPartner?.approval_status).toBe('APPROVED');
 
-    const redirectRes = await app.request(`/api/v1/public/deals/${encodeURIComponent(ingestRes.deal!.id)}/redirect?utm_source=owner_share`, {
-      headers: {
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-      }
-    });
+    const redirectRes = await app.request(`/api/v1/public/deals/${encodeURIComponent(ingestRes.deal!.id)}/redirect?utm_source=owner_share`, { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
     expect(redirectRes.status).toBe(302);
     const location = redirectRes.headers.get('location') || '';
     expect(location).toContain('https://www.amazon.in/dp/B09XS7JWHH');
