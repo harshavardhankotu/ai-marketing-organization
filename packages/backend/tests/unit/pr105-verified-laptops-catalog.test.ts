@@ -121,6 +121,30 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
     expect(hubHtml).toContain('#Ad');
     expect(hubHtml).toContain('rel="sponsored noopener noreferrer"');
     expect(hubHtml).toContain('/api/v1/public/deals/');
+    expect(hubHtml).toContain('Processor:');
+    expect(hubHtml).toContain('RAM:');
+    expect(hubHtml).toContain('Storage:');
+    expect(hubHtml).toContain('Display:');
+    expect(hubHtml).toContain('Weight:');
+    expect(hubHtml).not.toContain('Actives:');
+
+    // Absent laptop specs render "Not listed" rather than fabricating specs
+    const partialLaptop = {
+      ...laptops[0],
+      id: 'deal_partial_laptop_test',
+      evidenceJson: {
+        ...laptops[0].evidenceJson,
+        rawSpecs: { Processor: 'Intel Core i5-12450H' }
+      }
+    };
+    const partialHubHtml = ssg.renderBuyerGuideHtml(
+      { ...laptopHub!, deals: [partialLaptop] },
+      hubs,
+      [],
+      { siteName: 'AI Marketing Organization', authorName: 'Desk', contactEmail: 'desk@example.com', siteUrl: 'https://ai-marketing-organization.onrender.com' }
+    );
+    expect(partialHubHtml).toContain('Processor: Intel Core i5-12450H');
+    expect(partialHubHtml).toContain('Weight: Not listed');
 
     // Seed 1 live laptop in public_deals to verify /sitemap.xml includes /best/laptops-under-60000-india
     const engine = AutonomousDealDiscoveryEngine.getInstance();
@@ -162,7 +186,8 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
       expect(l.expectedProfitPer100VisitorsINR).toBe(0);
     }
 
-    // Non-laptop Electronics (e.g., earbuds) must never appear in laptop recommendations
+    // Non-laptop Electronics (distinct URL + audio specs) and standalone accessories must never appear in laptop recommendations,
+    // while genuine laptops with feature terms like "backlit keyboard" ARE accepted.
     const engine = AutonomousDealDiscoveryEngine.getInstance();
     for (const d of createHighIntentStarterDeals()) {
       (engine as any).dealsMap.set(d.id, d);
@@ -171,25 +196,58 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
       ...laptops[0],
       id: 'deal_earbuds_electronics_test',
       slug: 'boat-airdopes-electronics-test',
+      productUrl: 'https://www.boat-lifestyle.com/products/airdopes-141-test',
+      sourceUrl: 'https://www.boat-lifestyle.com/products/airdopes-141-test',
       title: 'boAt Airdopes 141 Wireless Earbuds (Electronics)',
       category: 'Electronics',
       subCategory: 'audio',
-      currentPriceINR: 1299
+      currentPriceINR: 1299,
+      evidenceJson: {
+        subCategory: 'audio',
+        rawSpecs: { 'Sub-Category': 'Audio (TWS Earbuds)' }
+      }
+    });
+    (engine as any).dealsMap.set('deal_keyboard_cover_accessory_test', {
+      ...laptops[0],
+      id: 'deal_keyboard_cover_accessory_test',
+      slug: 'laptop-keyboard-cover-test',
+      productUrl: 'https://store.acer.com/en-in/laptop-keyboard-cover-test',
+      sourceUrl: 'https://store.acer.com/en-in/laptop-keyboard-cover-test',
+      title: 'Silicone Laptop Keyboard Cover 15.6 inch',
+      category: 'Electronics',
+      subCategory: 'accessory',
+      currentPriceINR: 499,
+      evidenceJson: {
+        subCategory: 'accessory',
+        rawSpecs: { 'Sub-Category': 'Laptop Accessory' }
+      }
+    });
+    (engine as any).dealsMap.set('deal_backlit_laptop_test', {
+      ...laptops[0],
+      id: 'deal_backlit_laptop_test',
+      slug: 'acer-aspire-backlit-keyboard-laptop-test',
+      productUrl: 'https://store.acer.com/en-in/acer-aspire-backlit-keyboard-test',
+      sourceUrl: 'https://store.acer.com/en-in/acer-aspire-backlit-keyboard-test',
+      title: 'Acer Aspire laptop with backlit keyboard (16GB RAM, 512GB SSD)',
+      category: 'Electronics',
+      subCategory: 'laptop',
+      currentPriceINR: 44999
     });
 
     const laptopRes = await app.request('/api/v1/public/fair-price-check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        queryOrUrl: 'best laptop under 60000 for coding, 16GB RAM',
+        queryOrUrl: 'best laptop under 60000 for coding, 16GB RAM, backlit keyboard',
         skipAiSynthesis: true
       })
     });
     expect(laptopRes.status).toBe(200);
     const laptopJson = (await laptopRes.json()) as any;
-    expect(laptopJson.data.recommendations.some((r: any) => /earbud|airdopes/i.test(r.title))).toBe(false);
+    expect(laptopJson.data.recommendations.some((r: any) => /earbud|airdopes|keyboard cover/i.test(r.title))).toBe(false);
+    expect(laptopJson.data.recommendations.some((r: any) => /backlit keyboard/i.test(r.title))).toBe(true);
 
-    // Production publisher pipeline includes all 6 serums + 5 Acer laptops (11 total)
+    // Strict stock gate: UNPROBED / 403 / UNVERIFIED probes are rejected and never persisted as AFFILIATE_VERIFIED
     const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
     const { CuelinksV3Client } = await import('../../src/commission/cuelinks-v3-client.js');
     const { CommercialOpportunitySelector } = await import('../../src/commission/commercial-opportunity-selector.js');
@@ -198,12 +256,12 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
       approved: true,
       channel: { id: 331585, name: 'Channel 331585', approval_status: 'approved' }
     } as any);
-    const probeSpy = vi.spyOn(CommercialOpportunitySelector.prototype, 'probeMerchantProduct').mockResolvedValue({
-      probed: true,
-      available: true,
-      status: 'IN_STOCK',
-      priceINR: 0
-    } as any);
+    const probeSpy = vi.spyOn(CommercialOpportunitySelector.prototype, 'probeMerchantProduct').mockImplementation(async (url: string) => {
+      if (url.includes('store.acer.com')) {
+        return { probed: false, available: false, status: 'UNPROBED', httpStatus: 403, error: 'HTTP_403_BOT_BLOCK' } as any;
+      }
+      return { probed: true, available: true, status: 'IN_STOCK', priceINR: 0 } as any;
+    });
     const convSpy = vi.spyOn(CuelinksV3Client.prototype, 'convertLink').mockImplementation(async (params: any) => {
       const u = String(params?.url || '');
       const campId = u.includes('store.acer.com') ? '4360' : (u.includes('worldofasaya') ? '6458' : (u.includes('plumgoodness') ? '4098' : (u.includes('dotandkey') ? '4879' : '4161')));
@@ -217,8 +275,18 @@ describe('PR #105 — Verified Laptops Under ₹70,000 Catalog', () => {
     const offerSpy = vi.spyOn(engine as any, 'provisionMatchingPartnerOffer').mockResolvedValue(undefined);
 
     try {
+      const blockedRes = await engine.publishVerifiedSkincareCatalog('org_owner_primary', 'biz_platform_aro');
+      expect(blockedRes.publishedCount).toBe(6);
+      expect(blockedRes.rejected.length).toBe(5);
+      expect(blockedRes.rejected.every(r => r.campaignId === '4360' && r.probeStatus === 'UNPROBED')).toBe(true);
+      expect(persistSpy).toHaveBeenCalledTimes(6);
+
+      // When IN_STOCK + available: true, all 11 (6 serums + 5 Acer laptops) publish cleanly
+      probeSpy.mockResolvedValue({ probed: true, available: true, status: 'IN_STOCK', priceINR: 0 } as any);
+      persistSpy.mockClear();
       const pubRes = await engine.publishVerifiedSkincareCatalog('org_owner_primary', 'biz_platform_aro');
       expect(pubRes.publishedCount).toBe(11);
+      expect(pubRes.rejected.length).toBe(0);
       const publishedLaptops = pubRes.deals.filter(d => d.campaignId === '4360');
       expect(publishedLaptops.length).toBe(5);
     } finally {

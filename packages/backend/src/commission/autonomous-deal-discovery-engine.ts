@@ -6398,7 +6398,12 @@ export class AutonomousDealDiscoveryEngine {
   public async publishVerifiedSkincareCatalog(
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
-  ): Promise<{ publishedCount: number; deals: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }>; repairs: { publicDealsRepaired: number; campaignsRepaired: number } }> {
+  ): Promise<{
+    publishedCount: number;
+    deals: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }>;
+    rejected: Array<{ id: string; slug: string; campaignId: string; probeStatus: string; reason: string }>;
+    repairs: { publicDealsRepaired: number; campaignsRepaired: number };
+  }> {
     const cuelinksClient = CuelinksV3Client.getInstance();
     const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
     const channelRes = await cuelinksSync.getApprovedChannel();
@@ -6411,6 +6416,7 @@ export class AutonomousDealDiscoveryEngine {
     const serums = [...createVerifiedLiveSkincareSerums(), ...createVerifiedLiveLaptops()];
     const repairs = await this.repairCorruptObjectCategories();
     const published: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }> = [];
+    const rejected: Array<{ id: string; slug: string; campaignId: string; probeStatus: string; reason: string }> = [];
 
     try {
       for (let idx = 0; idx < serums.length; idx++) {
@@ -6419,10 +6425,17 @@ export class AutonomousDealDiscoveryEngine {
           await new Promise(resolve => setTimeout(resolve, 400));
         }
         const probe = await selector.probeMerchantProduct(deal.productUrl);
-        if (probe.status === 'DEAD_OR_OUT_OF_STOCK' || (probe.probed && probe.available === false && Number(probe.httpStatus || 0) === 404)) {
-          throw new Error(`MERCHANT_UNAVAILABLE for ${deal.id}: ${probe.error || probe.status}`);
+        if (probe.status !== 'IN_STOCK' || probe.available !== true) {
+          rejected.push({
+            id: deal.id,
+            slug: deal.slug || deal.canonicalSlug || deal.id,
+            campaignId: String(deal.affiliateCampaignId || ''),
+            probeStatus: String(probe.status || 'UNPROBED'),
+            reason: probe.error || `PROBE_NOT_IN_STOCK:${String(probe.status || 'UNPROBED')}`
+          });
+          continue;
         }
-        if (probe.probed && probe.available === true && probe.priceINR && probe.priceINR > 0) {
+        if (probe.priceINR && probe.priceINR > 0) {
           deal.currentPriceINR = probe.priceINR;
           if (deal.unitVolumeMl && deal.unitVolumeMl > 0) {
             deal.pricePerMlINR = Number((probe.priceINR / deal.unitVolumeMl).toFixed(2));
@@ -6472,7 +6485,7 @@ export class AutonomousDealDiscoveryEngine {
       this.clearRelationshipCache();
     }
 
-    return { publishedCount: published.length, deals: published, repairs };
+    return { publishedCount: published.length, deals: published, rejected, repairs };
   }
 
   public mapCategoryToSectorCode(category: string): SectorCode {
@@ -8712,12 +8725,12 @@ export class AutonomousDealDiscoveryEngine {
 
     const isLaptopDeal = (d: NormalizedDeal): boolean => {
       const sub = String(d.subCategory || d.evidenceJson?.subCategory || '').toLowerCase();
-      if (sub === 'laptop') return true;
-      const text = `${d.title || ''} ${d.evidenceJson?.rawSpecs?.['Sub-Category'] || ''}`;
-      if (/\b(earbud|tws|headphone|speaker|soundbar|watch|smartwatch|monitor|adapter|keyboard|mouse|dashcam|serum)\b/i.test(text)) {
+      const titleAndSub = `${d.title || ''} ${d.evidenceJson?.rawSpecs?.['Sub-Category'] || ''}`;
+      if (/\b(keyboard\s*cover|laptop\s*(?:bag|sleeve|stand|charger|adapter|skin)|cooling\s*pad|earbud|tws|headphone|speaker|soundbar|watch|smartwatch|monitor|dashcam|serum|wireless\s*mouse|usb\s*mouse)\b/i.test(titleAndSub)) {
         return false;
       }
-      return /\b(laptop|notebook|ultrabook|aspire|swift|nitro|vivobook|ideapad|thinkpad|inspiron|pavilion|macbook)\b/i.test(text);
+      if (sub === 'laptop') return true;
+      return /\b(laptop|notebook|ultrabook|aspire|swift|nitro|vivobook|ideapad|thinkpad|inspiron|pavilion|macbook)\b/i.test(titleAndSub);
     };
 
     const scoreShopperFit = (d: NormalizedDeal): number => {
