@@ -221,16 +221,27 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
       VALUES ('deal_inv_1', 'deal-inv-1', 'deal-inv-1', 'Verified Serum', 'Plum', 'Plum', 'Health & Beauty', 'SECTOR_G_LIFESTYLE', 'https://plumgoodness.com/p/1', 'https://linksredirect.com/?cid=331585', 599, 'INR', 'IN_STOCK', 'AFFILIATE_VERIFIED', 'PRODUCT', '{}', 1, 1, 1)
     `).run();
 
-    // Seed yesterday real payment + test-marked payment
+    // Seed yesterday real payment + test-marked payment (adapting to whether revenue_records has is_test)
     const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     db.prepare(`DELETE FROM revenue_records`).run();
-    db.prepare(`
-      INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, is_test, timestamp)
-      VALUES
-        ('rev_real_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_real_106', 1999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 0, ?),
-        ('rev_test_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_test_106', 5000, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 1, ?),
-        ('rev_sandbox_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'SANDBOX', 'tx_sb_106', 7000, 'INR', 1, 'TEST', 'REAL', 0, ?)
-    `).run(`${yest}T10:00:00Z`, `${yest}T11:00:00Z`, `${yest}T12:00:00Z`);
+    const revCols = (db.prepare(`PRAGMA table_info(revenue_records)`).all() as any[]).map(c => c.name);
+    if (revCols.includes('is_test')) {
+      db.prepare(`
+        INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, is_test, timestamp)
+        VALUES
+          ('rev_real_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_real_106', 1999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 0, ?),
+          ('rev_test_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_test_106', 5000, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 1, ?),
+          ('rev_sandbox_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'SANDBOX', 'tx_sb_106', 7000, 'INR', 1, 'TEST', 'REAL', 0, ?)
+      `).run(`${yest}T10:00:00Z`, `${yest}T11:00:00Z`, `${yest}T12:00:00Z`);
+    } else {
+      db.prepare(`
+        INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, timestamp)
+        VALUES
+          ('rev_real_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_real_106', 1999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', ?),
+          ('rev_test_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_test_106', 5000, 'INR', 1, 'TEST', 'TEST', ?),
+          ('rev_sandbox_106', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'SANDBOX', 'tx_sb_106', 7000, 'INR', 1, 'TEST', 'REAL', ?)
+      `).run(`${yest}T10:00:00Z`, `${yest}T11:00:00Z`, `${yest}T12:00:00Z`);
+    }
 
     const prevBrevo = process.env.BREVO_API_KEY;
     delete process.env.BREVO_API_KEY;
