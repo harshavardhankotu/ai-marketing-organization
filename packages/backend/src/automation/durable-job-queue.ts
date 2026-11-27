@@ -252,14 +252,16 @@ export class DurableJobQueue {
       errors.push(errMsg);
     }
 
-    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow in production
+    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow
     let activeWfSet = new Set<string>();
-    if (isProduction() && !process.env.VITEST) {
-      const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
+    const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
+    if (workflowIds.length > 0) {
       const wfPlaceholders = workflowIds.map(() => '?').join(', ');
-      const activeWfSql = `SELECT DISTINCT workflow_id FROM (SELECT workflow_id FROM automation_jobs WHERE workflow_id IN (${wfPlaceholders}) AND status IN ('QUEUED', 'RUNNING') ORDER BY created_at DESC LIMIT 50)`;
+      const activeWfSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE workflow_id IN (${wfPlaceholders}) AND status IN ('QUEUED', 'RUNNING')`;
       try {
-        const rows = await this.d1Repo.query<any>('automation_jobs', activeWfSql, workflowIds);
+        const rows = isProduction()
+          ? await this.d1Repo.query<any>('automation_jobs', activeWfSql, workflowIds)
+          : (getDb().prepare(activeWfSql).all(...workflowIds) as any[]);
         activeWfSet = new Set(rows.map(r => r.workflow_id));
       } catch {}
     }
@@ -743,21 +745,26 @@ export class DurableJobQueue {
         MIN(CASE WHEN status IN ('QUEUED', 'RETRY_WAIT') AND datetime(available_at) < datetime('now') THEN available_at ELSE NULL END) as oldest_overdue,
         MIN(CASE WHEN status = 'QUEUED' THEN created_at ELSE NULL END) as oldest_queued,
         SUM(CASE WHEN status = 'RUNNING' AND lease_expires_at IS NOT NULL AND datetime(lease_expires_at) < datetime('now') THEN 1 ELSE 0 END) as expired_leases,
-        MAX(CASE WHEN status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE') THEN completed_at ELSE NULL END) as last_success
-      FROM (
-        SELECT status, available_at, created_at, lease_expires_at, completed_at
-        FROM automation_jobs
-        ORDER BY created_at DESC
-        LIMIT 200
-      )
+        MAX(completed_at) as last_success
+      FROM automation_jobs
+      WHERE status IN ('QUEUED', 'RETRY_WAIT', 'RUNNING', 'BLOCKED')
       GROUP BY status
+    `;
+    const lastSuccessSql = `
+      SELECT completed_at as last_success
+      FROM automation_jobs
+      WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE')
+      LIMIT 1
     `;
 
     let rows: any[] = [];
+    let lastSuccessRow: any = null;
     if (isProduction()) {
       rows = await this.d1Repo.query('automation_jobs', sql, []);
+      lastSuccessRow = await this.d1Repo.queryOne('automation_jobs', lastSuccessSql, []);
     } else {
       rows = getDb().prepare(sql).all();
+      lastSuccessRow = getDb().prepare(lastSuccessSql).get();
     }
 
     const counts: Record<string, number> = {};
@@ -765,7 +772,7 @@ export class DurableJobQueue {
     let totalExpiredLeases = 0;
     let oldestOverdueTs: string | null = null;
     let oldestQueuedTs: string | null = null;
-    let lastSuccessTs: string | null = null;
+    let lastSuccessTs: string | null = lastSuccessRow?.last_success || null;
 
     const toUtcMs = (ts: string): number => {
       const s = String(ts || '').trim();
@@ -914,7 +921,7 @@ export class DurableJobQueue {
         SELECT id, workflow_id, available_at, created_at
         FROM automation_jobs
         WHERE status IN ('QUEUED', 'RETRY_WAIT')
-        ORDER BY created_at DESC
+        ORDER BY available_at ASC
         LIMIT 50
       `;
       const queuedRows = this.d1Repo.isRemoteD1ReadAllowed()
@@ -1051,7 +1058,7 @@ export class DurableJobQueue {
     let requeuedActiveBlockedCount = 0;
     let deferredMissingCredentialCount = 0;
     try {
-      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED' ORDER BY updated_at DESC LIMIT 25`;
+      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED' LIMIT 25`;
       const blockedRows = this.d1Repo.isRemoteD1ReadAllowed()
         ? await this.d1Repo.query<any>('automation_jobs', blockedSql)
         : getDb().prepare(blockedSql).all() as any[];
@@ -1137,7 +1144,7 @@ export class DurableJobQueue {
     const activeIds = Array.from(activeSet);
     if (activeIds.length > 0 && (supersededStaleCount > 0 || requeuedActiveBlockedCount > 0 || options?.activeWorkflowIds)) {
       try {
-        const activeSql = `SELECT DISTINCT workflow_id FROM (SELECT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT') ORDER BY created_at DESC LIMIT 50)`;
+        const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')`;
         const activeRows = this.d1Repo.isRemoteD1ReadAllowed()
           ? await this.d1Repo.query<any>('automation_jobs', activeSql)
           : getDb().prepare(activeSql).all() as any[];
@@ -1193,7 +1200,7 @@ export class DurableJobQueue {
   public async compactStaleDuplicateQueueJobs(): Promise<number> {
     try {
       // PR #92: Replace correlated subquery with bounded indexed scan + primary-key batch update
-      const queuedSql = `SELECT id, workflow_id FROM automation_jobs WHERE status = 'QUEUED' ORDER BY created_at DESC, id DESC LIMIT 50`;
+      const queuedSql = `SELECT id, workflow_id FROM automation_jobs WHERE status = 'QUEUED' ORDER BY available_at DESC LIMIT 50`;
       const rows = isProduction() && !process.env.VITEST
         ? await this.d1Repo.query<any>('automation_jobs', queuedSql)
         : getDb().prepare(queuedSql).all() as any[];

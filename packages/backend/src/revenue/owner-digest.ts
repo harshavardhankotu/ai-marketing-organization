@@ -16,6 +16,7 @@
  */
 
 import { getDb } from '../db/client.js';
+import { D1Client } from '../db/d1-client.js';
 import { isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
@@ -238,10 +239,13 @@ export interface OwnerTodayDigest {
   }>;
   autopilotStatus?: OutreachAutopilotHealth;
   commerceAutopilotStatus?: {
-    lastCommercialWorkflow: string | null;
-    lastRunStatus: string;
-    freshAffiliateVerifiedCount: number | null;
-    budgetStoppedLastCycle: boolean;
+    latestSuccessfulCommercialWorkflow: string | null;
+    latestAttemptedWorkflow: string | null;
+    latestBudgetStoppedCycle: boolean;
+    eligibleDealInventoryCount: number | null;
+    genuineHumanOutboundClicks: number | null;
+    active: boolean;
+    status: 'ACTIVE' | 'INACTIVE_UNPROVEN';
   };
   arosControlCenter?: ArosControlCenterSummary;
   sitefixFunnelAttribution?: SiteFixFunnelAttributionSummary;
@@ -464,8 +468,7 @@ export class OwnerDigestService {
       const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
       const payRow = db.prepare(`
         SELECT SUM(amount_inr) as total FROM revenue_records
-        WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
-          AND verified = 1${hasIsTest ? ' AND is_test = 0' : ''} AND timestamp LIKE ?
+        WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?
       `).get(`${yesterdayStr}%`) as any;
       if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
         payments = payRow.total;
@@ -657,10 +660,14 @@ export class OwnerDigestService {
 
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
     const sitefixFunnelAttribution = getSiteFixFunnelAttributionSummarySync();
-    let lastJobRow: any = null;
+    let latestSuccessRow: any = null;
+    let latestAttemptRow: any = null;
     try {
-      lastJobRow = db.prepare(
-        `SELECT workflow_id, status FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      latestSuccessRow = db.prepare(
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      ).get();
+      latestAttemptRow = db.prepare(
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
       ).get();
     } catch {}
     let freshDealsRow: any = null;
@@ -669,11 +676,24 @@ export class OwnerDigestService {
         `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
       ).get();
     } catch {}
+    let humanClicksRow: any = null;
+    try {
+      humanClicksRow = db.prepare(
+        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+      ).get();
+    } catch {}
+    const syncCycleUsage = D1Client.getInstance().getCycleUsage();
+    const latestSuccessfulCommercialWorkflow = latestSuccessRow?.workflow_id ? String(latestSuccessRow.workflow_id) : null;
+    const latestBudgetStoppedCycle = Boolean(syncCycleUsage?.budgetExceeded);
+    const commerceActive = Boolean(latestSuccessfulCommercialWorkflow) && !latestBudgetStoppedCycle;
     const commerceAutopilotStatus = {
-      lastCommercialWorkflow: lastJobRow?.workflow_id ? String(lastJobRow.workflow_id) : null,
-      lastRunStatus: lastJobRow?.status ? String(lastJobRow.status) : 'UNAVAILABLE',
-      freshAffiliateVerifiedCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
-      budgetStoppedLastCycle: false
+      latestSuccessfulCommercialWorkflow,
+      latestAttemptedWorkflow: latestAttemptRow?.workflow_id ? String(latestAttemptRow.workflow_id) : null,
+      latestBudgetStoppedCycle,
+      eligibleDealInventoryCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
+      genuineHumanOutboundClicks: humanClicksRow && typeof humanClicksRow.c === 'number' ? humanClicksRow.c : null,
+      active: commerceActive,
+      status: (commerceActive ? 'ACTIVE' : 'INACTIVE_UNPROVEN') as 'ACTIVE' | 'INACTIVE_UNPROVEN'
     };
 
     return {
@@ -781,6 +801,27 @@ export class OwnerDigestService {
    * In non-production, delegates to synchronous generateDigest.
    * In production, queries Cloudflare D1 as the single source of truth without falling back to local SQLite.
    */
+  private buildRealPaymentPredicate(hasIsTest: boolean): string {
+    const base = `(classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL') AND verified = 1 AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(verification_method, '')) NOT IN ('TEST', 'SANDBOX')`;
+    return hasIsTest ? `${base} AND (is_test = 0 OR is_test IS NULL)` : base;
+  }
+
+  private async hasColumn(tableName: string, columnName: string): Promise<boolean> {
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        const row = await this.d1Repo.queryOne<{ name: string }>(
+          'pragma_table_info',
+          `SELECT name FROM pragma_table_info(?) WHERE LOWER(name) = LOWER(?)`,
+          [tableName, columnName]
+        );
+        return Boolean(row?.name);
+      }
+      return this.hasLocalColumn(tableName, columnName);
+    } catch {
+      return false;
+    }
+  }
+
   private hasLocalColumn(tableName: string, columnName: string): boolean {
     try {
       const cols = getDb().prepare(`PRAGMA table_info(${tableName})`).all() as any[];
@@ -1526,11 +1567,11 @@ export class OwnerDigestService {
     } catch {}
 
     try {
+      const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
       const payRow = await this.d1Repo.queryOne<{ total: number }>(
         'revenue_records',
         `SELECT SUM(amount_inr) as total FROM revenue_records
-         WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
-           AND verified = 1 AND timestamp LIKE ?`,
+         WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?`,
         [`${yesterdayStr}%`]
       );
       if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
@@ -1724,21 +1765,37 @@ export class OwnerDigestService {
     ]);
     const topHighTriggerProspects = this.scoreAndRankProspectAudits(prodAudits, prodProspects, prodContacts, 5);
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
-    const lastJobRow = await this.queryCcOne<any>(
-      'automation_jobs',
-      `SELECT workflow_id, status FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
-    );
-    const freshDealsRow = await this.queryCcOne<any>(
-      'public_deals',
-      `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
-    );
+    const [latestSuccessRow, latestAttemptRow, freshDealsRow, humanClicksRow] = await Promise.all([
+      this.queryCcOne<any>(
+        'automation_jobs',
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      ),
+      this.queryCcOne<any>(
+        'automation_jobs',
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      ),
+      this.queryCcOne<any>(
+        'public_deals',
+        `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
+      ),
+      this.queryCcOne<any>(
+        'referral_click_events',
+        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+      )
+    ]);
     const { D1Client } = await import('../db/d1-client.js');
     const cycleUsage = D1Client.getInstance().getCycleUsage();
+    const latestSuccessfulCommercialWorkflow = latestSuccessRow?.workflow_id ? String(latestSuccessRow.workflow_id) : null;
+    const latestBudgetStoppedCycle = Boolean(cycleUsage?.budgetExceeded);
+    const commerceActive = Boolean(latestSuccessfulCommercialWorkflow) && !latestBudgetStoppedCycle;
     const commerceAutopilotStatus = {
-      lastCommercialWorkflow: lastJobRow?.workflow_id ? String(lastJobRow.workflow_id) : null,
-      lastRunStatus: lastJobRow?.status ? String(lastJobRow.status) : 'UNAVAILABLE',
-      freshAffiliateVerifiedCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
-      budgetStoppedLastCycle: Boolean(cycleUsage?.budgetExceeded)
+      latestSuccessfulCommercialWorkflow,
+      latestAttemptedWorkflow: latestAttemptRow?.workflow_id ? String(latestAttemptRow.workflow_id) : null,
+      latestBudgetStoppedCycle,
+      eligibleDealInventoryCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
+      genuineHumanOutboundClicks: humanClicksRow && typeof humanClicksRow.c === 'number' ? humanClicksRow.c : null,
+      active: commerceActive,
+      status: (commerceActive ? 'ACTIVE' : 'INACTIVE_UNPROVEN') as 'ACTIVE' | 'INACTIVE_UNPROVEN'
     };
 
     return {

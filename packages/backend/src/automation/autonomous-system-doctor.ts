@@ -137,6 +137,16 @@ export interface OutreachAutopilotHealth {
   outreachAutopilotActive: boolean;
 }
 
+export interface CommerceAutopilotHealth {
+  latestSuccessfulCommercialWorkflow: string | null;
+  latestAttemptedWorkflow: string | null;
+  latestBudgetStoppedCycle: boolean;
+  eligibleDealInventoryCount: number | null;
+  genuineHumanOutboundClicks: number | null;
+  active: boolean;
+  status: 'ACTIVE' | 'INACTIVE_UNPROVEN';
+}
+
 export interface ConstitutionVerificationResult {
   constitutionStatus: 'ENFORCED_ALL_INVARIANTS_PASS' | 'REPAIRED_VIOLATIONS' | 'HALTED_INVARIANT_VIOLATION';
   outreachHaltedByConstitution: boolean;

@@ -9215,7 +9215,8 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
       'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
       'x-test-traffic': c.req.header('x-test-traffic') || '',
       'x-test-mode': c.req.header('x-test-mode') || '',
-      'x-owner-preview': c.req.header('x-owner-preview') || ''
+      'x-owner-preview': c.req.header('x-owner-preview') || '',
+      'x-internal-admin': c.req.header('x-internal-admin') || ''
     };
     if (c.req.query('test_traffic') === 'true') {
       headersMap['x-test-traffic'] = 'true';
