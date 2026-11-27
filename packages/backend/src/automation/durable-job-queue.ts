@@ -505,7 +505,7 @@ export class DurableJobQueue {
       const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
       rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
       if (rowsAffected > 0) {
-        await this.recordTerminalTransition(status, rowsAffected, completedAtNow);
+        await this.recordTerminalTransition(status, rowsAffected, completedAtNow, true);
       }
     } else {
       const db = getDb();
@@ -513,7 +513,7 @@ export class DurableJobQueue {
         const res = db.prepare(sql).run(...params);
         rowsAffected = res.changes;
         if (rowsAffected > 0) {
-          this.applyAtomicTerminalSync(db, status, rowsAffected, completedAtNow);
+          this.applyAtomicTerminalSync(db, status, rowsAffected, completedAtNow, true);
         }
       });
       tx();
@@ -806,16 +806,43 @@ export class DurableJobQueue {
     return { sql, params: [DurableJobQueue.TERMINAL_LAST_SUCCESS_ID, completedAt, completedAt] };
   }
 
-  private applyAtomicTerminalSync(db: any, status: string, count: number, completedAt?: string | null): void {
+  private applyAtomicTerminalSync(
+    db: any,
+    status: string,
+    count: number,
+    completedAt?: string | null,
+    countsAsWorkflowSuccess: boolean = true
+  ): void {
     if (count <= 0) return;
     if (!(DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(status)) return;
     const counterOp = this.buildAtomicCounterOp(status, count);
     db.prepare(counterOp.sql).run(...counterOp.params);
-    if (DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(status)) {
+    if (countsAsWorkflowSuccess && DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(status)) {
       const ts = completedAt || new Date().toISOString().replace('T', ' ').slice(0, 19);
       const lsOp = this.buildAtomicLastSuccessOp(ts);
       db.prepare(lsOp.sql).run(...lsOp.params);
     }
+  }
+
+  private async markSummaryNeedsReconcile(reason: string): Promise<void> {
+    try {
+      const sql = `
+        INSERT INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at)
+        VALUES (?, 'QUEUE_SUMMARY', 0, json_object('boundedInit', true, 'backfillComplete', false, 'summaryNeedsReconcile', true, 'lastError', ?), datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          metadata_json = json_set(
+            CASE WHEN json_valid(cron_telemetry.metadata_json) THEN cron_telemetry.metadata_json ELSE '{}' END,
+            '$.summaryNeedsReconcile', json('true'),
+            '$.lastError', ?
+          ),
+          updated_at = datetime('now')
+      `;
+      if (isProduction()) {
+        await this.d1Repo.executeWrite('cron_telemetry', sql, [DurableJobQueue.TERMINAL_META_ID, reason.slice(0, 200), reason.slice(0, 200)]);
+      } else {
+        getDb().prepare(sql).run(DurableJobQueue.TERMINAL_META_ID, reason.slice(0, 200), reason.slice(0, 200));
+      }
+    } catch {}
   }
 
   public async ensureTerminalSummaryInitialized(limit: number = DurableJobQueue.COLD_START_RECONCILE_LIMIT): Promise<void> {
@@ -831,13 +858,13 @@ export class DurableJobQueue {
       return;
     }
 
-    // Bounded cold-start initialization: never scan unbounded terminal history
+    // Bounded deterministic cold-start initialization ordered ASC by terminal time + id
     const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const boundedSql = `
-      SELECT id, status, completed_at
+      SELECT id, status, completed_at, COALESCE(completed_at, updated_at) AS term_ts
       FROM automation_jobs
       WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
-      ORDER BY available_at DESC
+      ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC
       LIMIT ?
     `;
     let rows: any[] = [];
@@ -866,12 +893,16 @@ export class DurableJobQueue {
     }
 
     const backfillComplete = rows.length < boundedLimit;
-    const lastCursorId = rows.length > 0 ? String(rows[rows.length - 1].id || '') : null;
+    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null;
+    const cursorCompletedAt = lastRow ? String(lastRow.term_ts || '') : null;
+    const cursorId = lastRow ? String(lastRow.id || '') : null;
     const metaPayload = JSON.stringify({
       boundedInit: true,
       backfillComplete,
+      summaryNeedsReconcile: false,
       reconciledCount: rows.length,
-      lastCursorId,
+      cursorCompletedAt,
+      cursorId,
       initializedAt: new Date().toISOString()
     });
 
@@ -902,38 +933,133 @@ export class DurableJobQueue {
         });
         tx();
       }
-    } catch {}
+    } catch (err: any) {
+      await this.markSummaryNeedsReconcile(err?.message || 'INIT_FAILED');
+    }
   }
 
   public async reconcileTerminalSummaryBatch(limit: number = 200): Promise<{ processed: number; backfillComplete: boolean }> {
+    await this.ensureTerminalSummaryInitialized(limit);
+    const metaSql = `SELECT metadata_json FROM cron_telemetry WHERE id = ?`;
+    const metaRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('cron_telemetry', metaSql, [DurableJobQueue.TERMINAL_META_ID])
+      : (getDb().prepare(metaSql).get(DurableJobQueue.TERMINAL_META_ID) as any);
+
+    let meta: any = {};
+    try {
+      meta = typeof metaRow?.metadata_json === 'string' ? JSON.parse(metaRow.metadata_json) : (metaRow?.metadata_json || {});
+    } catch {}
+
+    if (meta.backfillComplete === true && !meta.summaryNeedsReconcile) {
+      return { processed: 0, backfillComplete: true };
+    }
+
     const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    const sql = `
-      SELECT status, COUNT(*) as cnt
-      FROM (
-        SELECT status
+    const hasCursor = Boolean(meta.cursorCompletedAt && meta.cursorId && !meta.summaryNeedsReconcile);
+    const batchSql = hasCursor
+      ? `
+        SELECT id, status, completed_at, COALESCE(completed_at, updated_at) AS term_ts
         FROM automation_jobs
         WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
-        ORDER BY available_at DESC
+          AND (COALESCE(completed_at, updated_at) > ? OR (COALESCE(completed_at, updated_at) = ? AND id > ?))
+        ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC
         LIMIT ?
-      )
-      GROUP BY status
-    `;
+      `
+      : `
+        SELECT id, status, completed_at, COALESCE(completed_at, updated_at) AS term_ts
+        FROM automation_jobs
+        WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
+        ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC
+        LIMIT ?
+      `;
+    const params = hasCursor ? [meta.cursorCompletedAt, meta.cursorCompletedAt, meta.cursorId, boundedLimit] : [boundedLimit];
+
     const rows = isProduction()
-      ? await this.d1Repo.query<any>('automation_jobs', sql, [boundedLimit])
-      : (getDb().prepare(sql).all(boundedLimit) as any[]);
-    let processed = 0;
-    for (const r of rows) processed += Number(r?.cnt || 0);
-    return { processed, backfillComplete: processed < boundedLimit };
+      ? await this.d1Repo.query<any>('automation_jobs', batchSql, params)
+      : (getDb().prepare(batchSql).all(...params) as any[]);
+
+    const counts: Record<string, number> = {};
+    let lastSuccess: string | null = null;
+    const toMs = (v: string) => new Date(v.includes('T') ? (v.endsWith('Z') ? v : `${v}Z`) : `${v.replace(' ', 'T')}Z`).getTime();
+
+    for (const r of rows) {
+      const st = String(r?.status || '');
+      if ((DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(st)) {
+        counts[st] = (counts[st] || 0) + 1;
+        if (DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(st) && r?.completed_at) {
+          const ts = String(r.completed_at);
+          if (!lastSuccess || toMs(ts) > toMs(lastSuccess)) {
+            lastSuccess = ts;
+          }
+        }
+      }
+    }
+
+    const backfillComplete = rows.length < boundedLimit;
+    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null;
+    const nextCursorCompletedAt = lastRow ? String(lastRow.term_ts || '') : (meta.cursorCompletedAt || null);
+    const nextCursorId = lastRow ? String(lastRow.id || '') : (meta.cursorId || null);
+    const nextMetaPayload = JSON.stringify({
+      boundedInit: true,
+      backfillComplete,
+      summaryNeedsReconcile: false,
+      reconciledCount: Number(meta.reconciledCount || 0) + rows.length,
+      cursorCompletedAt: nextCursorCompletedAt,
+      cursorId: nextCursorId,
+      initializedAt: meta.initializedAt || new Date().toISOString()
+    });
+
+    const ops: Array<{ table: any; sql: string; params: any[] }> = [];
+    if (meta.summaryNeedsReconcile && !hasCursor) {
+      // Full reset of counter rows when repairing drift from start
+      for (const st of DurableJobQueue.TERMINAL_STATUS_LIST) {
+        ops.push({
+          table: 'cron_telemetry',
+          sql: `INSERT OR REPLACE INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at) VALUES (?, 'QUEUE_SUMMARY', 0, json_object('count', ?, 'initializedAt', datetime('now')), datetime('now'))`,
+          params: [`${DurableJobQueue.TERMINAL_COUNTER_PREFIX}${st}`, counts[st] || 0]
+        });
+      }
+    } else {
+      for (const [st, cnt] of Object.entries(counts)) {
+        if (cnt > 0) {
+          const op = this.buildAtomicCounterOp(st, cnt);
+          ops.push({ table: 'cron_telemetry', sql: op.sql, params: op.params });
+        }
+      }
+    }
+    if (lastSuccess) {
+      const lsOp = this.buildAtomicLastSuccessOp(lastSuccess);
+      ops.push({ table: 'cron_telemetry', sql: lsOp.sql, params: lsOp.params });
+    }
+    ops.push({
+      table: 'cron_telemetry',
+      sql: `INSERT OR REPLACE INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at) VALUES (?, 'QUEUE_SUMMARY', 0, ?, datetime('now'))`,
+      params: [DurableJobQueue.TERMINAL_META_ID, nextMetaPayload]
+    });
+
+    if (isProduction()) {
+      await this.d1Repo.executeBatch(ops);
+    } else {
+      const db = getDb();
+      const tx = db.transaction(() => {
+        for (const op of ops) db.prepare(op.sql).run(...op.params);
+      });
+      tx();
+    }
+
+    return { processed: rows.length, backfillComplete };
   }
 
   private async readTerminalSummary(): Promise<{
     counts: Record<string, number>;
     lastSuccessfulExecutionAt: string | null;
+    terminalCountsComplete: boolean;
   }> {
     await this.ensureTerminalSummaryInitialized();
     const counts: Record<string, number> = {};
     for (const st of DurableJobQueue.TERMINAL_STATUS_LIST) counts[st] = 0;
     let lastSuccessfulExecutionAt: string | null = null;
+    let terminalCountsComplete = false;
 
     const readSql = `SELECT id, metadata_json, last_successful_cycle FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`;
     let rows: any[] = [];
@@ -945,7 +1071,12 @@ export class DurableJobQueue {
 
     for (const r of rows) {
       const id = String(r?.id || '');
-      if (id.startsWith(DurableJobQueue.TERMINAL_COUNTER_PREFIX)) {
+      if (id === DurableJobQueue.TERMINAL_META_ID) {
+        try {
+          const parsed = typeof r.metadata_json === 'string' ? JSON.parse(r.metadata_json) : r.metadata_json;
+          terminalCountsComplete = Boolean(parsed?.backfillComplete) && !Boolean(parsed?.summaryNeedsReconcile);
+        } catch {}
+      } else if (id.startsWith(DurableJobQueue.TERMINAL_COUNTER_PREFIX)) {
         const st = id.slice(DurableJobQueue.TERMINAL_COUNTER_PREFIX.length);
         try {
           const parsed = typeof r.metadata_json === 'string' ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -963,10 +1094,15 @@ export class DurableJobQueue {
       }
     }
 
-    return { counts, lastSuccessfulExecutionAt };
+    return { counts, lastSuccessfulExecutionAt, terminalCountsComplete };
   }
 
-  private async recordTerminalTransition(status: string, count: number, completedAt?: string | null): Promise<void> {
+  private async recordTerminalTransition(
+    status: string,
+    count: number,
+    completedAt?: string | null,
+    countsAsWorkflowSuccess: boolean = true
+  ): Promise<void> {
     if (count <= 0) return;
     if (!(DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(status)) return;
 
@@ -975,7 +1111,7 @@ export class DurableJobQueue {
       const counterOp = this.buildAtomicCounterOp(status, count);
       ops.push({ table: 'cron_telemetry', sql: counterOp.sql, params: counterOp.params });
 
-      if (DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(status)) {
+      if (countsAsWorkflowSuccess && DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(status)) {
         const ts = completedAt || new Date().toISOString().replace('T', ' ').slice(0, 19);
         const lsOp = this.buildAtomicLastSuccessOp(ts);
         ops.push({ table: 'cron_telemetry', sql: lsOp.sql, params: lsOp.params });
@@ -990,7 +1126,9 @@ export class DurableJobQueue {
         });
         tx();
       }
-    } catch {}
+    } catch (err: any) {
+      await this.markSummaryNeedsReconcile(err?.message || 'TERMINAL_TRANSITION_WRITE_FAILED');
+    }
   }
 
   /**
@@ -1013,6 +1151,7 @@ export class DurableJobQueue {
     oldestOverdueAgeMinutes: number;
     oldestQueuedAgeMinutes: number;
     lastSuccessfulExecutionAt: string | null;
+    terminalCountsComplete: boolean;
   }> {
     const sql = `
       SELECT
@@ -1100,7 +1239,8 @@ export class DurableJobQueue {
       overdueCount: totalOverdue,
       oldestOverdueAgeMinutes,
       oldestQueuedAgeMinutes,
-      lastSuccessfulExecutionAt: lastSuccessTs
+      lastSuccessfulExecutionAt: lastSuccessTs,
+      terminalCountsComplete: terminalSummary.terminalCountsComplete
     };
   }
 
@@ -1347,7 +1487,7 @@ export class DurableJobQueue {
       `;
       try {
         cancelledParkedBlockedCount = await execWrite(parkedSql, parkedIds);
-        await this.recordTerminalTransition('NO_ACTION_DUE', cancelledParkedBlockedCount);
+        await this.recordTerminalTransition('NO_ACTION_DUE', cancelledParkedBlockedCount, null, false);
       } catch (err: any) {
         console.warn(`[JobQueue] recoverStaleAndBlockedJobs parked notice: ${err.message}`);
       }
@@ -1439,6 +1579,11 @@ export class DurableJobQueue {
     }
 
     const compactedDuplicateCount = await this.compactStaleDuplicateQueueJobs();
+
+    // Advance one bounded backfill batch during idle/recovery maintenance if incomplete
+    try {
+      await this.reconcileTerminalSummaryBatch(DurableJobQueue.COLD_START_RECONCILE_LIMIT);
+    } catch {}
 
     // 3. Schedule 1 fresh job for each active enabled workflow that has no remaining active job
     let freshJobsScheduledCount = 0;
@@ -1566,7 +1711,7 @@ export class DurableJobQueue {
         }
       }
       if (totalChanged > 0) {
-        await this.recordTerminalTransition('NO_ACTION_DUE', totalChanged);
+        await this.recordTerminalTransition('NO_ACTION_DUE', totalChanged, null, false);
       }
       return totalChanged;
     } catch (err: any) {

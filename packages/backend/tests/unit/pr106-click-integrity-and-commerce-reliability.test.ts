@@ -599,4 +599,130 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     hasColSpy.mockRestore();
     expect(asyncNoCol.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
   });
+
+  it('i) performs incremental cursor backfill (310 -> 200 + 110), sets summaryNeedsReconcile on D1 batch failure, isolates dedup/cancel from lastSuccessfulExecutionAt, and unifies verifiedRevenueCount predicate', async () => {
+    const db = getDb();
+    const queue = DurableJobQueue.getInstance();
+
+    // 1. Incremental backfill: 310 historical terminal jobs -> 200 on init (incomplete), 110 on reconcile (complete)
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
+    const insertStmt = db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, completed_at, result_json, created_at, updated_at)
+      VALUES (?, 'wf_backfill', 'biz_platform_aro', 'org_owner_primary', ?, ?, 0, '{}', '{}', 0, 3, datetime('now'), ?, '{}', datetime('now'), ?)
+    `);
+    db.transaction(() => {
+      for (let idx = 0; idx < 310; idx++) {
+        const status =
+          idx < 10 ? 'FAILED_PERMANENTLY' :
+          idx < 25 ? 'PARTIAL' :
+          idx < 50 ? 'DEFERRED' :
+          'COMPLETED';
+        const ts = new Date(Date.UTC(2026, 0, 1, 0, Math.floor(idx / 60), idx % 60)).toISOString();
+        insertStmt.run(`bf_${String(idx).padStart(3, '0')}`, `bf_k_${idx}`, status, ts, ts);
+      }
+    })();
+
+    const initialStats = await queue.getQueueStats();
+    expect(initialStats.terminalCountsComplete).toBe(false);
+    expect(initialStats.completed + initialStats.failedPermanently + initialStats.partial + initialStats.deferred + initialStats.noActionDue).toBe(200);
+
+    const reconcileRes = await queue.reconcileTerminalSummaryBatch(200);
+    expect(reconcileRes.processed).toBe(110);
+    expect(reconcileRes.backfillComplete).toBe(true);
+
+    const finalStats = await queue.getQueueStats();
+    expect(finalStats.terminalCountsComplete).toBe(true);
+    expect(finalStats.failedPermanently).toBe(10);
+    expect(finalStats.partial).toBe(15);
+    expect(finalStats.deferred).toBe(25);
+    expect(finalStats.completed).toBe(260);
+
+    // 2. Production D1 batch/reconcile resilience
+    const d1Repo = (queue as any).d1Repo;
+    vi.stubEnv('NODE_ENV', 'production');
+    const execBatchSpy = vi.spyOn(d1Repo, 'executeBatch').mockRejectedValueOnce(new Error('D1_BATCH_FAILED'));
+    const execSpy = vi.spyOn(d1Repo, 'executeWrite').mockImplementation(async (_table: any, sql: any, params: any[] = []) => {
+      db.prepare(sql).run(...params);
+      return { changes: 1 };
+    });
+    await (queue as any).recordTerminalTransition('COMPLETED', 1, '2026-02-01T00:00:00.000Z', true);
+    vi.unstubAllEnvs();
+    execBatchSpy.mockRestore();
+    execSpy.mockRestore();
+
+    const dirtyStats = await queue.getQueueStats();
+    expect(dirtyStats.terminalCountsComplete).toBe(false);
+
+    const repairRes1 = await queue.reconcileTerminalSummaryBatch(200);
+    expect(repairRes1.processed).toBe(200);
+    expect(repairRes1.backfillComplete).toBe(false);
+    const repairRes2 = await queue.reconcileTerminalSummaryBatch(200);
+    expect(repairRes2.processed).toBe(110);
+    expect(repairRes2.backfillComplete).toBe(true);
+    const repairedStats = await queue.getQueueStats();
+    expect(repairedStats.terminalCountsComplete).toBe(true);
+
+    // 3. Dedup / cancellation never advances lastSuccessfulExecutionAt
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
+    const genuineTs = '2026-01-15T10:00:00.000Z';
+    await (queue as any).recordTerminalTransition('COMPLETED', 1, genuineTs, true);
+    expect((await queue.getQueueStats()).lastSuccessfulExecutionAt).toBe(genuineTs);
+
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES
+        ('dedup_keep', 'wf_iso', 'biz_platform_aro', 'org_owner_primary', 'dk', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now'), '{}', datetime('now'), datetime('now')),
+        ('dedup_drop', 'wf_iso', 'biz_platform_aro', 'org_owner_primary', 'dd', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-5 minutes'), '{}', datetime('now', '-5 minutes'), datetime('now', '-5 minutes')),
+        ('parked_blk', 'wf_parked', 'biz_platform_aro', 'org_owner_primary', 'pb', 'BLOCKED', 0, '{}', '{}', 0, 3, datetime('now'), '{}', datetime('now', '-40 minutes'), datetime('now', '-40 minutes'))
+    `).run();
+
+    await queue.compactStaleDuplicateQueueJobs();
+    await queue.recoverStaleAndBlockedJobs({ skipSystemDoctor: true, activeWorkflowIds: ['wf_iso'], parkedWorkflowIds: ['wf_parked'] });
+
+    const isoStats = await queue.getQueueStats();
+    expect(isoStats.noActionDue).toBe(2);
+    expect(isoStats.lastSuccessfulExecutionAt).toBe(genuineTs);
+
+    // 4. Unified payment predicate: real vs TEST vs SANDBOX without is_test column
+    const digestService = OwnerDigestService.getInstance();
+    db.prepare(`DELETE FROM revenue_records`).run();
+    const hasIsTestCol = (db.prepare(`PRAGMA table_info(revenue_records)`).all() as any[]).some(c => c.name === 'is_test');
+    if (hasIsTestCol) {
+      db.prepare(`
+        INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, is_test, timestamp)
+        VALUES
+          ('rev_u_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_1', 999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 0, datetime('now')),
+          ('rev_u_2', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_2', 999, 'INR', 1, 'TEST', 'REAL', 0, datetime('now')),
+          ('rev_u_3', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_3', 999, 'INR', 1, 'SANDBOX', 'REAL', 0, datetime('now'))
+      `).run();
+    } else {
+      db.prepare(`
+        INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, timestamp)
+        VALUES
+          ('rev_u_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_1', 999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', datetime('now')),
+          ('rev_u_2', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_2', 999, 'INR', 1, 'TEST', 'REAL', datetime('now')),
+          ('rev_u_3', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_3', 999, 'INR', 1, 'SANDBOX', 'REAL', datetime('now'))
+      `).run();
+    }
+
+    const origHasLocalCol = (digestService as any).hasLocalColumn.bind(digestService);
+    const localColSpy = vi.spyOn(digestService as any, 'hasLocalColumn').mockImplementation((t: any, c: any) => {
+      if (t === 'revenue_records' && c === 'is_test') return false;
+      return origHasLocalCol(t, c);
+    });
+    const syncUnified = digestService.generateDigest();
+    localColSpy.mockRestore();
+    expect(syncUnified.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
+
+    const origHasColAsync = (digestService as any).hasColumn.bind(digestService);
+    const asyncColSpy = vi.spyOn(digestService as any, 'hasColumn').mockImplementation(async (t: any, c: any) => {
+      if (t === 'revenue_records' && c === 'is_test') return false;
+      return origHasColAsync(t, c);
+    });
+    const asyncUnified = await digestService.generateDigestAsync();
+    asyncColSpy.mockRestore();
+    expect(asyncUnified.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
+  });
 });

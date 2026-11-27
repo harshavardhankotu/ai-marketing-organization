@@ -531,7 +531,7 @@ export class OwnerDigestService {
     try {
       const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
       const revRow = db.prepare(
-        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1${hasIsTest ? ' AND (is_test = 0 OR is_test IS NULL)' : ''} AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED')`
+        `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
       ).get() as any;
       verifiedRevenueCount = Number(revRow?.count || 0);
     } catch {}
@@ -1642,7 +1642,7 @@ export class OwnerDigestService {
       const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
       const revRow = await this.d1Repo.queryOne<{ count: number }>(
         'revenue_records',
-        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1${hasIsTest ? ' AND (is_test = 0 OR is_test IS NULL)' : ''} AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED')`
+        `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
       );
       verifiedRevenueCount = Number(revRow?.count || 0);
     } catch {}
