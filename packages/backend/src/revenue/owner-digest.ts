@@ -529,7 +529,10 @@ export class OwnerDigestService {
     // 1. First pipeline stage with a count of 0
     let verifiedRevenueCount = 0;
     try {
-      const revRow = db.prepare(`SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1 AND is_test = 0`).get() as any;
+      const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
+      const revRow = db.prepare(
+        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1${hasIsTest ? ' AND (is_test = 0 OR is_test IS NULL)' : ''} AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED')`
+      ).get() as any;
       verifiedRevenueCount = Number(revRow?.count || 0);
     } catch {}
 
@@ -1636,9 +1639,10 @@ export class OwnerDigestService {
     // 1. First pipeline stage with count of 0
     let verifiedRevenueCount = 0;
     try {
+      const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
       const revRow = await this.d1Repo.queryOne<{ count: number }>(
         'revenue_records',
-        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1 AND is_test = 0`
+        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1${hasIsTest ? ' AND (is_test = 0 OR is_test IS NULL)' : ''} AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED')`
       );
       verifiedRevenueCount = Number(revRow?.count || 0);
     } catch {}

@@ -28,7 +28,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     try {
       const db = getDb();
       db.prepare(`DELETE FROM automation_jobs`).run();
-      db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+      db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     } catch {}
   });
 
@@ -136,7 +136,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     const d1Client = D1Client.getInstance();
 
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     // Seed 1 older active job for affiliate_offer_reconciliation + 60 newer jobs for other workflows
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
@@ -225,7 +225,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     db.prepare(`DROP TABLE IF EXISTS cost_ledger`).run();
     db.prepare(`DROP TABLE IF EXISTS brevo_daily_quota`).run();
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     db.prepare(`DELETE FROM public_deals`).run();
 
     // Seed AFFILIATE_VERIFIED deal inventory but ZERO completed commercial workflows
@@ -321,7 +321,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     const db = getDb();
     const queue = DurableJobQueue.getInstance();
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
 
     // 1. >50 queued jobs for one workflow: newest payload must be retained after recovery
     for (let i = 0; i < 55; i++) {
@@ -338,7 +338,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
 
     // 2. Mixed future-scheduled and already-due jobs: due job must NOT be displaced by future job
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
       VALUES
@@ -352,7 +352,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     expect(futRow.status).toBe('NO_ACTION_DUE');
 
     // 3. Terminal counters & ordered lastSuccess
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
       VALUES
@@ -391,7 +391,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
 
     // 1. Success-vs-failure timestamp: COMPLETED at 12:00 + FAILED_PERMANENTLY/PARTIAL/DEFERRED at 13:00 -> stays 12:00
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
       VALUES
@@ -416,7 +416,7 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
 
     // 2. >100 queued jobs boundary + mixed due and future-scheduled jobs
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     for (let i = 0; i < 105; i++) {
       const minsAgo = 200 - i;
       db.prepare(`
@@ -451,9 +451,9 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     expect(futJob.status).toBe('NO_ACTION_DUE');
     expect(compactionRowsRead).toBeLessThanOrEqual(150);
 
-    // 3. Bounded terminal stats on 300+ historical terminal rows
+    // 3. Bounded terminal stats on 300+ historical terminal rows (cold-start bounded to LIMIT 200)
     db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id = 'queue_terminal_summary'`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     for (let i = 0; i < 310; i++) {
       const st = i < 10 ? 'FAILED_PERMANENTLY' : i < 25 ? 'PARTIAL' : i < 50 ? 'DEFERRED' : 'COMPLETED';
       db.prepare(`
@@ -462,11 +462,26 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
       `).run(`term300_${i}`, `tk_${i}`, st);
     }
 
+    let coldStartRowsRead = 0;
+    const coldSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      const stmt = origPrepare(sql);
+      const origAll = stmt.all.bind(stmt);
+      stmt.all = (...args: any[]) => {
+        const res = origAll(...args);
+        if (sql.includes('FROM automation_jobs')) coldStartRowsRead += Array.isArray(res) ? res.length : 0;
+        return res;
+      };
+      return stmt;
+    });
+
     const initialStats = await queue.getQueueStats();
-    expect(initialStats.failedPermanently).toBe(10);
-    expect(initialStats.partial).toBe(15);
-    expect(initialStats.deferred).toBe(25);
-    expect(initialStats.completed).toBe(260);
+    coldSpy.mockRestore();
+    expect(coldStartRowsRead).toBeLessThanOrEqual(200);
+    const metaRow = db.prepare(`SELECT metadata_json FROM cron_telemetry WHERE id = 'queue_terminal_summary_meta'`).get() as any;
+    const meta = JSON.parse(metaRow.metadata_json);
+    expect(meta.boundedInit).toBe(true);
+    expect(meta.backfillComplete).toBe(false);
+    expect(initialStats.completed + initialStats.failedPermanently + initialStats.partial + initialStats.deferred).toBe(200);
 
     let steadyRowsRead = 0;
     const statsSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
@@ -489,9 +504,99 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     const steadyStats = await queue.getQueueStats();
     statsSpy.mockRestore();
 
-    expect(steadyStats.failedPermanently).toBe(10);
-    expect(steadyStats.completed).toBe(260);
+    expect(steadyStats.completed + steadyStats.failedPermanently + steadyStats.partial + steadyStats.deferred).toBe(200);
     expect(steadyRowsRead).toBeLessThanOrEqual(10);
-    console.log(`PR106_MEASURED_READS: compactionRowsRead=${compactionRowsRead} steadyTerminalStatsRowsRead=${steadyRowsRead}`);
+    console.log(`PR106_MEASURED_READS: coldStartRowsRead=${coldStartRowsRead} compactionRowsRead=${compactionRowsRead} steadyTerminalStatsRowsRead=${steadyRowsRead}`);
+  });
+
+  it('h) atomic terminal counters: zero first-transition double-count, no repeated-transition double-count, RUNNING race guard, recovery due priority, and verifiedRevenueCount on 0050', async () => {
+    const db = getDb();
+    const queue = DurableJobQueue.getInstance();
+
+    // 1. First terminal transition when no summary row exists -> counted exactly ONCE (not 2)
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES ('first_tx_job', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'ftx_1', 'RUNNING', 0, '{}', '{}', 1, 3, datetime('now'), '{}', datetime('now'), datetime('now'))
+    `).run();
+    const c1 = await queue.completeJob('first_tx_job', 'COMPLETED', { ok: true });
+    expect(c1.success).toBe(true);
+    expect(c1.rowsAffected).toBe(1);
+
+    // 2. Repeated transition on an already-terminal job -> 0 changes, still counted ONCE
+    const c2 = await queue.completeJob('first_tx_job', 'COMPLETED', { ok: true });
+    expect(c2.rowsAffected).toBe(0);
+    const statsAfterFirst = await queue.getQueueStats();
+    expect(statsAfterFirst.completed).toBe(1);
+
+    // 3. Compaction with mismatched created_at vs available_at AND one duplicate flipped to RUNNING before update
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES
+        ('cmp_win', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'cw', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-5 minutes'), '{}', datetime('now', '-20 minutes'), datetime('now')),
+        ('cmp_run', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'cr', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-10 minutes'), '{}', datetime('now', '-1 minute'), datetime('now')),
+        ('cmp_dup', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'cd', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-15 minutes'), '{}', datetime('now', '-30 minutes'), datetime('now'))
+    `).run();
+    // Simulate cmp_run claimed -> RUNNING right as compaction runs UPDATE ... WHERE status = 'QUEUED'
+    const origPrep = db.prepare.bind(db);
+    let flipped = false;
+    const raceSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (!flipped && sql.includes("SET status = 'NO_ACTION_DUE'")) {
+        flipped = true;
+        origPrep(`UPDATE automation_jobs SET status = 'RUNNING' WHERE id = 'cmp_run'`).run();
+      }
+      return origPrep(sql);
+    });
+    const compactedCount = await queue.compactStaleDuplicateQueueJobs();
+    raceSpy.mockRestore();
+
+    expect(compactedCount).toBe(1); // Only cmp_dup transitioned; cmp_run stayed RUNNING
+    expect((db.prepare(`SELECT status FROM automation_jobs WHERE id = 'cmp_win'`).get() as any).status).toBe('QUEUED');
+    expect((db.prepare(`SELECT status FROM automation_jobs WHERE id = 'cmp_run'`).get() as any).status).toBe('RUNNING');
+    expect((db.prepare(`SELECT status FROM automation_jobs WHERE id = 'cmp_dup'`).get() as any).status).toBe('NO_ACTION_DUE');
+    expect((await queue.getQueueStats()).noActionDue).toBe(1);
+
+    // 4. Recovery with 1 future-scheduled job + 1 stale due-now job for the same workflow -> due-now job preserved
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES
+        ('rec_future', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'rf', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '+2 hours'), '{}', datetime('now'), datetime('now')),
+        ('rec_due_stale', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'rd', 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-90 minutes'), '{}', datetime('now', '-90 minutes'), datetime('now', '-90 minutes'))
+    `).run();
+    await queue.recoverStaleAndBlockedJobs({ skipSystemDoctor: true, activeWorkflowIds: ['affiliate_offer_reconciliation'] });
+    expect((db.prepare(`SELECT status FROM automation_jobs WHERE id = 'rec_due_stale'`).get() as any).status).toBe('QUEUED');
+    expect((db.prepare(`SELECT status FROM automation_jobs WHERE id = 'rec_future'`).get() as any).status).toBe('DEFERRED');
+
+    // 5. Missing revenue_records.is_test (0050 schema) -> both sync and async digest return non-zero verifiedRevenueCount
+    const digestService = OwnerDigestService.getInstance();
+    db.prepare(`DELETE FROM revenue_records`).run();
+    const hasIsTestCol = (db.prepare(`PRAGMA table_info(revenue_records)`).all() as any[]).some(c => c.name === 'is_test');
+    if (hasIsTestCol) {
+      db.prepare(`
+        INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, is_test, timestamp)
+        VALUES ('rev_cnt_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_cnt_1', 999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 0, datetime('now'))
+      `).run();
+    } else {
+      db.prepare(`
+        INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, timestamp)
+        VALUES ('rev_cnt_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_cnt_1', 999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', datetime('now'))
+      `).run();
+    }
+    const syncNoCol = digestService.generateDigest();
+    expect(syncNoCol.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
+
+    const origHasCol = (digestService as any).hasColumn.bind(digestService);
+    const hasColSpy = vi.spyOn(digestService as any, 'hasColumn').mockImplementation(async (t: any, c: any) => {
+      if (t === 'revenue_records' && c === 'is_test') return false;
+      return origHasCol(t, c);
+    });
+    const asyncNoCol = await digestService.generateDigestAsync();
+    hasColSpy.mockRestore();
+    expect(asyncNoCol.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
   });
 });
