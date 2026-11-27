@@ -303,4 +303,69 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     const fixed = db.prepare(`SELECT category FROM partner_offers WHERE id = 'po_corrupt_1'`).get() as any;
     expect(fixed.category).toBe('Electronics');
   });
+
+  it('f) restores terminal queue counters, newest >50 payload retention, newest-due compaction, ordered lastSuccess, and beacon exclusions', async () => {
+    const db = getDb();
+    const queue = DurableJobQueue.getInstance();
+    db.prepare(`DELETE FROM automation_jobs`).run();
+
+    // 1. >50 queued jobs for one workflow: newest payload must be retained after recovery
+    for (let i = 0; i < 55; i++) {
+      const minsAgo = 180 - i; // i=54 is newest (126 mins ago)
+      db.prepare(`
+        INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+        VALUES (?, 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', ?, 'QUEUED', 0, ?, '{}', 0, 3, datetime('now', '-' || ? || ' minutes'), '{}', datetime('now', '-' || ? || ' minutes'), datetime('now', '-' || ? || ' minutes'))
+      `).run(`stale_seq_${i}`, `stale_seq_key_${i}`, JSON.stringify({ seq: i }), minsAgo, minsAgo, minsAgo);
+    }
+    await queue.recoverStaleAndBlockedJobs({ skipSystemDoctor: true, activeWorkflowIds: ['affiliate_offer_reconciliation'] });
+    const retained = db.prepare(`SELECT id, status FROM automation_jobs WHERE workflow_id = 'affiliate_offer_reconciliation' AND status = 'QUEUED'`).all() as any[];
+    expect(retained.length).toBe(1);
+    expect(retained[0].id).toBe('stale_seq_54');
+
+    // 2. Mixed future-scheduled and already-due jobs: due job must NOT be displaced by future job
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES
+        ('job_future_old', 'daily_market_demand_research', 'biz_platform_aro', 'org_owner_primary', 'k_fut', 'QUEUED', 1, '{}', '{}', 0, 3, datetime('now', '+2 hours'), '{}', datetime('now', '-10 minutes'), datetime('now', '-10 minutes')),
+        ('job_due_new', 'daily_market_demand_research', 'biz_platform_aro', 'org_owner_primary', 'k_due', 'QUEUED', 1, '{}', '{}', 0, 3, datetime('now', '-1 minute'), '{}', datetime('now', '-1 minute'), datetime('now', '-1 minute'))
+    `).run();
+    await queue.compactStaleDuplicateQueueJobs();
+    const dueRow = db.prepare(`SELECT status FROM automation_jobs WHERE id = 'job_due_new'`).get() as any;
+    const futRow = db.prepare(`SELECT status FROM automation_jobs WHERE id = 'job_future_old'`).get() as any;
+    expect(dueRow.status).toBe('QUEUED');
+    expect(futRow.status).toBe('NO_ACTION_DUE');
+
+    // 3. Terminal counters & ordered lastSuccess
+    db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
+      VALUES
+        ('job_fail_perm', 'quota_health_checks', 'biz_platform_aro', 'org_owner_primary', 'k_fp', 'FAILED_PERMANENTLY', 1, '{}', '{}', 3, 3, datetime('now'), '{}', '2026-11-26 10:00:00', datetime('now'), datetime('now')),
+        ('job_comp_old', 'seasonal_demand_research', 'biz_platform_aro', 'org_owner_primary', 'k_co', 'COMPLETED', 1, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-26 08:00:00', datetime('now'), datetime('now')),
+        ('job_comp_new', 'affiliate_offer_reconciliation', 'biz_platform_aro', 'org_owner_primary', 'k_cn', 'COMPLETED', 0, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-27 12:00:00', datetime('now'), datetime('now'))
+    `).run();
+    const stats = await queue.getQueueStats();
+    expect(stats.failedPermanently).toBe(1);
+    expect(stats.completed).toBe(2);
+    expect(stats.lastSuccessfulExecutionAt).toBe('2026-11-27 12:00:00');
+
+    // 4. Diagnostic beacons excluded from genuine human outbound clicks across sync digest, AROS, and async digest
+    db.prepare(`DELETE FROM referral_click_events`).run();
+    db.prepare(`
+      INSERT INTO referral_click_events (id, referral_id, click_id, organization_id, offer_id, partner_id, placement, source, medium, device_class, destination_url, created_at)
+      VALUES
+        ('clk_h1', 'ref_h1', 'cid_h1', 'org_owner_primary', 'deal_1', 'part_cuelinks', 'deal_card', 'deals_page', 'cpc_affiliate', 'browser_candidate', 'https://linksredirect.com/?cid=331585', datetime('now')),
+        ('clk_b1', 'ref_b1', 'cid_b1', 'org_owner_primary', 'deal_1', 'part_cuelinks', 'direct_beacon', 'deals_page', 'cpc_affiliate', 'browser_candidate', 'https://example.com', datetime('now')),
+        ('clk_b2', 'ref_b2', 'cid_b2', 'org_owner_primary', 'deal_1', 'part_cuelinks', 'deal_card', 'direct_beacon', 'beacon', 'browser_candidate', 'https://example.com', datetime('now'))
+    `).run();
+
+    const digestService = OwnerDigestService.getInstance();
+    const syncDigest = digestService.generateDigest();
+    const aros = await digestService.getArosControlCenterSummary();
+    const asyncDigest = await digestService.generateDigestAsync();
+    expect(syncDigest.commerceAutopilotStatus?.genuineHumanOutboundClicks).toBe(1);
+    expect(syncDigest.commerceAutopilotStatus?.latestSuccessfulCommercialWorkflow).toBe('affiliate_offer_reconciliation');
+    expect(aros.commercialPerformance.outboundClicks.value).toBe(1);
+    expect(asyncDigest.commerceAutopilotStatus?.genuineHumanOutboundClicks).toBe(1);
+  });
 });

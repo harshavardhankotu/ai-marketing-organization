@@ -251,6 +251,12 @@ export interface OwnerTodayDigest {
   sitefixFunnelAttribution?: SiteFixFunnelAttributionSummary;
 }
 
+export const GENUINE_HUMAN_CLICK_PREDICATE =
+  `(device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal'))` +
+  ` AND COALESCE(placement, '') != 'direct_beacon'` +
+  ` AND COALESCE(source, '') != 'direct_beacon'` +
+  ` AND COALESCE(medium, '') != 'beacon'`;
+
 export class OwnerDigestService {
   private static instance: OwnerDigestService;
   private replyDesk = ReplyDeskService.getInstance();
@@ -664,7 +670,7 @@ export class OwnerDigestService {
     let latestAttemptRow: any = null;
     try {
       latestSuccessRow = db.prepare(
-        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY completed_at DESC, updated_at DESC LIMIT 1`
       ).get();
       latestAttemptRow = db.prepare(
         `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
@@ -679,7 +685,7 @@ export class OwnerDigestService {
     let humanClicksRow: any = null;
     try {
       humanClicksRow = db.prepare(
-        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+        `SELECT COALESCE(SUM(CASE WHEN ${GENUINE_HUMAN_CLICK_PREDICATE} THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
       ).get();
     } catch {}
     const syncCycleUsage = D1Client.getInstance().getCycleUsage();
@@ -933,7 +939,7 @@ export class OwnerDigestService {
       ),
       this.queryCcOne<any>(
         'referral_click_events',
-        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+        `SELECT COALESCE(SUM(CASE WHEN ${GENUINE_HUMAN_CLICK_PREDICATE} THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
       ),
       this.queryCcOne<any>(
         'platform_prospects',
@@ -1768,7 +1774,7 @@ export class OwnerDigestService {
     const [latestSuccessRow, latestAttemptRow, freshDealsRow, humanClicksRow] = await Promise.all([
       this.queryCcOne<any>(
         'automation_jobs',
-        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY completed_at DESC, updated_at DESC LIMIT 1`
       ),
       this.queryCcOne<any>(
         'automation_jobs',
@@ -1780,7 +1786,7 @@ export class OwnerDigestService {
       ),
       this.queryCcOne<any>(
         'referral_click_events',
-        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+        `SELECT COALESCE(SUM(CASE WHEN ${GENUINE_HUMAN_CLICK_PREDICATE} THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
       )
     ]);
     const { D1Client } = await import('../db/d1-client.js');
