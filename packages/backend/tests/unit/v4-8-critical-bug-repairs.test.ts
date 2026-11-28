@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+vi.hoisted(() => {
+  process.env.DATABASE_PATH = ':memory:';
+});
 import { DurableJobQueue } from '../../src/automation/durable-job-queue.js';
 import { getDb } from '../../src/db/client.js';
 import { CuelinksSyncManager } from '../../src/commission/cuelinks-sync-manager.js';

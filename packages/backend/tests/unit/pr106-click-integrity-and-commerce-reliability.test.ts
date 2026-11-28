@@ -451,62 +451,23 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     expect(futJob.status).toBe('NO_ACTION_DUE');
     expect(compactionRowsRead).toBeLessThanOrEqual(150);
 
-    // 3. Bounded terminal stats on 300+ historical terminal rows (cold-start bounded to LIMIT 200)
+    // 3. Bounded stateless 7-day terminal stats on 300+ historical terminal rows (LIMIT 200, zero cron_telemetry writes)
     db.prepare(`DELETE FROM automation_jobs`).run();
     db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
     for (let i = 0; i < 310; i++) {
       const st = i < 10 ? 'FAILED_PERMANENTLY' : i < 25 ? 'PARTIAL' : i < 50 ? 'DEFERRED' : 'COMPLETED';
       db.prepare(`
         INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, completed_at, created_at, updated_at)
-        VALUES (?, 'daily_market_demand_research', 'biz_platform_aro', 'org_owner_primary', ?, ?, 1, '{}', '{}', 1, 3, datetime('now'), '{}', '2026-11-27 12:00:00', datetime('now'), datetime('now'))
+        VALUES (?, 'daily_market_demand_research', 'biz_platform_aro', 'org_owner_primary', ?, ?, 1, '{}', '{}', 1, 3, datetime('now'), '{}', datetime('now'), datetime('now'), datetime('now'))
       `).run(`term300_${i}`, `tk_${i}`, st);
     }
 
-    let coldStartRowsRead = 0;
-    const coldSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
-      const stmt = origPrepare(sql);
-      const origAll = stmt.all.bind(stmt);
-      stmt.all = (...args: any[]) => {
-        const res = origAll(...args);
-        if (sql.includes('FROM automation_jobs')) coldStartRowsRead += Array.isArray(res) ? res.length : 0;
-        return res;
-      };
-      return stmt;
-    });
-
     const initialStats = await queue.getQueueStats();
-    coldSpy.mockRestore();
-    expect(coldStartRowsRead).toBeLessThanOrEqual(200);
-    const metaRow = db.prepare(`SELECT metadata_json FROM cron_telemetry WHERE id = 'queue_terminal_summary_meta'`).get() as any;
-    const meta = JSON.parse(metaRow.metadata_json);
-    expect(meta.boundedInit).toBe(true);
-    expect(meta.backfillComplete).toBe(false);
-    expect(initialStats.completed + initialStats.failedPermanently + initialStats.partial + initialStats.deferred).toBe(200);
-
-    let steadyRowsRead = 0;
-    const statsSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
-      const stmt = origPrepare(sql);
-      const origAll = stmt.all.bind(stmt);
-      const origGet = stmt.get.bind(stmt);
-      stmt.all = (...args: any[]) => {
-        const res = origAll(...args);
-        steadyRowsRead += Array.isArray(res) ? res.length : 0;
-        return res;
-      };
-      stmt.get = (...args: any[]) => {
-        const res = origGet(...args);
-        if (res) steadyRowsRead += 1;
-        return res;
-      };
-      return stmt;
-    });
-
-    const steadyStats = await queue.getQueueStats();
-    statsSpy.mockRestore();
-
-    expect(steadyStats.completed + steadyStats.failedPermanently + steadyStats.partial + steadyStats.deferred).toBe(200);
-    expect(steadyRowsRead).toBeLessThanOrEqual(10);
-    console.log(`PR106_MEASURED_READS: coldStartRowsRead=${coldStartRowsRead} compactionRowsRead=${compactionRowsRead} steadyTerminalStatsRowsRead=${steadyRowsRead}`);
+    expect(initialStats.status).toBe('OK');
+    expect(initialStats.terminalStatsScope).toBe('RECENT_BOUNDED_7D');
+    expect((initialStats.completed ?? 0) + (initialStats.failedPermanently ?? 0) + (initialStats.partial ?? 0) + (initialStats.deferred ?? 0)).toBe(200);
+    const telemetryRows = db.prepare(`SELECT COUNT(*) as c FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).get() as any;
+    expect(Number(telemetryRows?.c || 0)).toBe(0);
   });
 
   it('h) atomic terminal counters: zero first-transition double-count, no repeated-transition double-count, RUNNING race guard, recovery due priority, and verifiedRevenueCount on 0050', async () => {
@@ -600,76 +561,37 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
     expect(asyncNoCol.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
   });
 
-  it('i) performs incremental cursor backfill (310 -> 200 + 110), sets summaryNeedsReconcile on D1 batch failure, isolates dedup/cancel from lastSuccessfulExecutionAt, and unifies verifiedRevenueCount predicate', async () => {
+  it('i) verifies stateless bounded stats fail-closed UNAVAILABLE, dedup/cancel lastSuccess isolation, UTC offset normalization, compaction dedup/partial batch preservation, and MANUAL_VERIFIED/fail-closed/inboundLeads digest', async () => {
     const db = getDb();
     const queue = DurableJobQueue.getInstance();
 
-    // 1. Incremental backfill: 310 historical terminal jobs -> 200 on init (incomplete), 110 on reconcile (complete)
+    // a) Stateless bounded terminal stats (no cron_telemetry writes) + fail-closed UNAVAILABLE on read failure
     db.prepare(`DELETE FROM automation_jobs`).run();
     db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
-    const insertStmt = db.prepare(`
+    db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, completed_at, result_json, created_at, updated_at)
-      VALUES (?, 'wf_backfill', 'biz_platform_aro', 'org_owner_primary', ?, ?, 0, '{}', '{}', 0, 3, datetime('now'), ?, '{}', datetime('now'), ?)
-    `);
-    db.transaction(() => {
-      for (let idx = 0; idx < 310; idx++) {
-        const status =
-          idx < 10 ? 'FAILED_PERMANENTLY' :
-          idx < 25 ? 'PARTIAL' :
-          idx < 50 ? 'DEFERRED' :
-          'COMPLETED';
-        const ts = new Date(Date.UTC(2026, 0, 1, 0, Math.floor(idx / 60), idx % 60)).toISOString();
-        insertStmt.run(`bf_${String(idx).padStart(3, '0')}`, `bf_k_${idx}`, status, ts, ts);
-      }
-    })();
+      VALUES
+        ('stat_recent', 'wf_stat', 'biz_platform_aro', 'org_owner_primary', 'sr1', 'COMPLETED', 0, '{}', '{}', 0, 3, datetime('now'), '2026-01-15 10:00:00', '{}', datetime('now'), datetime('now')),
+        ('stat_old', 'wf_stat', 'biz_platform_aro', 'org_owner_primary', 'so1', 'COMPLETED', 0, '{}', '{}', 0, 3, datetime('now', '-10 days'), '2026-01-01 10:00:00', '{}', datetime('now', '-10 days'), datetime('now', '-10 days'))
+    `).run();
 
-    const initialStats = await queue.getQueueStats();
-    expect(initialStats.terminalCountsComplete).toBe(false);
-    expect(initialStats.completed + initialStats.failedPermanently + initialStats.partial + initialStats.deferred + initialStats.noActionDue).toBe(200);
+    const okStats = await queue.getQueueStats();
+    expect(okStats.status).toBe('OK');
+    expect(okStats.terminalStatsScope).toBe('RECENT_BOUNDED_7D');
+    expect(okStats.completed).toBe(1); // Only within 7-day window
+    expect((db.prepare(`SELECT COUNT(*) as c FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).get() as any).c).toBe(0);
 
-    const reconcileRes = await queue.reconcileTerminalSummaryBatch(200);
-    expect(reconcileRes.processed).toBe(110);
-    expect(reconcileRes.backfillComplete).toBe(true);
-
-    const finalStats = await queue.getQueueStats();
-    expect(finalStats.terminalCountsComplete).toBe(true);
-    expect(finalStats.failedPermanently).toBe(10);
-    expect(finalStats.partial).toBe(15);
-    expect(finalStats.deferred).toBe(25);
-    expect(finalStats.completed).toBe(260);
-
-    // 2. Production D1 batch/reconcile resilience
-    const d1Repo = (queue as any).d1Repo;
-    vi.stubEnv('NODE_ENV', 'production');
-    const execBatchSpy = vi.spyOn(d1Repo, 'executeBatch').mockRejectedValueOnce(new Error('D1_BATCH_FAILED'));
-    const execSpy = vi.spyOn(d1Repo, 'executeWrite').mockImplementation(async (_table: any, sql: any, params: any[] = []) => {
-      db.prepare(sql).run(...params);
-      return { changes: 1 };
+    const failSpy = vi.spyOn(db, 'prepare').mockImplementationOnce(() => {
+      throw new Error('DB_READ_FAILED');
     });
-    await (queue as any).recordTerminalTransition('COMPLETED', 1, '2026-02-01T00:00:00.000Z', true);
-    vi.unstubAllEnvs();
-    execBatchSpy.mockRestore();
-    execSpy.mockRestore();
+    const unavailStats = await queue.getQueueStats();
+    failSpy.mockRestore();
+    expect(unavailStats.status).toBe('UNAVAILABLE');
+    expect(unavailStats.terminalStatsScope).toBe('RECENT_BOUNDED_7D');
+    expect(unavailStats.completed).toBeNull();
+    expect(unavailStats.queued).toBeNull();
 
-    const dirtyStats = await queue.getQueueStats();
-    expect(dirtyStats.terminalCountsComplete).toBe(false);
-
-    const repairRes1 = await queue.reconcileTerminalSummaryBatch(200);
-    expect(repairRes1.processed).toBe(200);
-    expect(repairRes1.backfillComplete).toBe(false);
-    const repairRes2 = await queue.reconcileTerminalSummaryBatch(200);
-    expect(repairRes2.processed).toBe(110);
-    expect(repairRes2.backfillComplete).toBe(true);
-    const repairedStats = await queue.getQueueStats();
-    expect(repairedStats.terminalCountsComplete).toBe(true);
-
-    // 3. Dedup / cancellation never advances lastSuccessfulExecutionAt
-    db.prepare(`DELETE FROM automation_jobs`).run();
-    db.prepare(`DELETE FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`).run();
-    const genuineTs = '2026-01-15T10:00:00.000Z';
-    await (queue as any).recordTerminalTransition('COMPLETED', 1, genuineTs, true);
-    expect((await queue.getQueueStats()).lastSuccessfulExecutionAt).toBe(genuineTs);
-
+    // b) SUPERSEDED_DEDUP / cancelled NO_ACTION_DUE rows never advance lastSuccessfulExecutionAt
     db.prepare(`
       INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
       VALUES
@@ -683,46 +605,97 @@ describe('PR #106: Click Integrity, Cron Budget, Seasonal Matching, and D1 0050 
 
     const isoStats = await queue.getQueueStats();
     expect(isoStats.noActionDue).toBe(2);
-    expect(isoStats.lastSuccessfulExecutionAt).toBe(genuineTs);
+    expect(isoStats.lastSuccessfulExecutionAt).toBe('2026-01-15 10:00:00');
 
-    // 4. Unified payment predicate: real vs TEST vs SANDBOX without is_test column
+    // c) ISO timestamps with timezone offsets (+05:30 / T) normalize to canonical UTC and compare accurately against SQLite timestamps
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    const enqSingle = await queue.enqueueJob({
+      workflowId: 'wf_tz_single',
+      idempotencyKey: 'tz_single_1',
+      availableAt: '2026-11-28T05:30:00+05:30'
+    });
+    expect(enqSingle.job.availableAt).toBe('2026-11-28 00:00:00');
+    const enqBatch = await queue.enqueueJobsBatch([{
+      workflowId: 'wf_tz_batch',
+      idempotencyKey: 'tz_batch_1',
+      availableAt: '2026-11-28T05:30:00+05:30'
+    }]);
+    expect(enqBatch.enqueuedCount).toBe(1);
+    const tzBatchRow = db.prepare(`SELECT available_at FROM automation_jobs WHERE idempotency_key = 'tz_batch_1'`).get() as any;
+    expect(tzBatchRow.available_at).toBe('2026-11-28 00:00:00');
+
+    // d) Compaction deduplicates overlapping IDs and preserves partial batch change counts
+    db.prepare(`DELETE FROM automation_jobs`).run();
+    const insComp = db.prepare(`
+      INSERT INTO automation_jobs (id, workflow_id, business_id, organization_id, idempotency_key, status, priority, payload_json, checkpoint_json, attempts, max_attempts, available_at, result_json, created_at, updated_at)
+      VALUES (?, 'wf_chunk', 'biz_platform_aro', 'org_owner_primary', ?, 'QUEUED', 0, '{}', '{}', 0, 3, datetime('now', '-1 minute'), '{}', datetime('now'), datetime('now'))
+    `);
+    db.transaction(() => {
+      for (let i = 0; i < 65; i++) {
+        insComp.run(`chk_${String(i).padStart(2, '0')}`, `chk_k_${i}`);
+      }
+    })();
+
+    const origPrep = db.prepare.bind(db);
+    let updateBatchCalls = 0;
+    const chunkSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes("SET status = 'NO_ACTION_DUE'")) {
+        updateBatchCalls++;
+        if (updateBatchCalls === 2) {
+          throw new Error('PARTIAL_BATCH_FAIL');
+        }
+      }
+      return origPrep(sql);
+    });
+    const partialChanged = await queue.compactStaleDuplicateQueueJobs();
+    chunkSpy.mockRestore();
+    expect(partialChanged).toBe(50);
+
+    // e) MANUAL_VERIFIED payments counted, TEST/SANDBOX excluded, failed is_test probe fails closed, researched prospects excluded from inboundLeads
     const digestService = OwnerDigestService.getInstance();
     db.prepare(`DELETE FROM revenue_records`).run();
+    db.prepare(`DELETE FROM platform_prospects`).run();
+
+    const yesterdayDate = new Date(Date.now() - 86400000);
+    const yesterdayTs = `${yesterdayDate.getFullYear()}-${String(yesterdayDate.getMonth() + 1).padStart(2, '0')}-${String(yesterdayDate.getDate()).padStart(2, '0')} 12:00:00`;
+
     const hasIsTestCol = (db.prepare(`PRAGMA table_info(revenue_records)`).all() as any[]).some(c => c.name === 'is_test');
     if (hasIsTestCol) {
       db.prepare(`
         INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, is_test, timestamp)
         VALUES
-          ('rev_u_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_1', 999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', 0, datetime('now')),
-          ('rev_u_2', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_2', 999, 'INR', 1, 'TEST', 'REAL', 0, datetime('now')),
-          ('rev_u_3', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_3', 999, 'INR', 1, 'SANDBOX', 'REAL', 0, datetime('now'))
-      `).run();
+          ('rev_mv_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_mv_1', 1500, 'INR', 1, 'OWNER_DASHBOARD', 'MANUAL_VERIFIED', 0, ?),
+          ('rev_mv_2', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_mv_2', 999, 'INR', 1, 'TEST', 'REAL', 0, ?),
+          ('rev_mv_3', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_mv_3', 999, 'INR', 1, 'SANDBOX', 'REAL', 0, ?)
+      `).run(yesterdayTs, yesterdayTs, yesterdayTs);
     } else {
       db.prepare(`
         INSERT INTO revenue_records (id, organization_id, business_id, revenue_type, source, transaction_id, amount_inr, currency, verified, verification_method, classification, timestamp)
         VALUES
-          ('rev_u_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_1', 999, 'INR', 1, 'MANUAL_EXPORT', 'REAL', datetime('now')),
-          ('rev_u_2', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_2', 999, 'INR', 1, 'TEST', 'REAL', datetime('now')),
-          ('rev_u_3', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_u_3', 999, 'INR', 1, 'SANDBOX', 'REAL', datetime('now'))
-      `).run();
+          ('rev_mv_1', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_mv_1', 1500, 'INR', 1, 'OWNER_DASHBOARD', 'MANUAL_VERIFIED', ?),
+          ('rev_mv_2', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_mv_2', 999, 'INR', 1, 'TEST', 'REAL', ?),
+          ('rev_mv_3', 'org_owner_primary', 'biz_platform_aro', 'OWN_OFFER_SALES', 'RAZORPAY_EXPORT', 'tx_mv_3', 999, 'INR', 1, 'SANDBOX', 'REAL', ?)
+      `).run(yesterdayTs, yesterdayTs, yesterdayTs);
     }
 
-    const origHasLocalCol = (digestService as any).hasLocalColumn.bind(digestService);
-    const localColSpy = vi.spyOn(digestService as any, 'hasLocalColumn').mockImplementation((t: any, c: any) => {
-      if (t === 'revenue_records' && c === 'is_test') return false;
-      return origHasLocalCol(t, c);
-    });
-    const syncUnified = digestService.generateDigest();
-    localColSpy.mockRestore();
-    expect(syncUnified.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
+    // Seed 1 researched outbound prospect + 1 genuine inbound inquiry created yesterday
+    db.prepare(`
+      INSERT INTO platform_prospects (id, prospect_business_name, prospect_city, prospect_vertical, stage, source, discovery_source, status, is_test, is_junk, created_at)
+      VALUES
+        ('pr_res_1', 'Researched Clinic', 'Hyderabad', 'DENTAL', 'DISCOVERED', 'AUTONOMOUS_RESEARCH', 'WEB_SCRAPE', 'PROSPECT', 0, 0, ?),
+        ('pr_inb_1', 'Inbound Clinic', 'Hyderabad', 'DENTAL', 'INBOUND', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_REQUEST', 0, 0, ?)
+    `).run(yesterdayTs, yesterdayTs);
 
-    const origHasColAsync = (digestService as any).hasColumn.bind(digestService);
-    const asyncColSpy = vi.spyOn(digestService as any, 'hasColumn').mockImplementation(async (t: any, c: any) => {
-      if (t === 'revenue_records' && c === 'is_test') return false;
-      return origHasColAsync(t, c);
-    });
-    const asyncUnified = await digestService.generateDigestAsync();
-    asyncColSpy.mockRestore();
-    expect(asyncUnified.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
+    const syncManual = digestService.generateDigest();
+    expect(syncManual.yesterdayMetrics.payments).toBe(1500);
+    expect(syncManual.yesterdayMetrics.leads).toBe(1);
+    expect(syncManual.topPainPoints.some(p => p.metric === 'verified_payments = 1')).toBe(true);
+
+    // Failed is_test schema probe -> fails closed (UNAVAILABLE / UNKNOWN)
+    const probeFailSpy = vi.spyOn(digestService as any, 'hasLocalColumn').mockReturnValueOnce(null).mockReturnValueOnce(null);
+    const failClosedDigest = digestService.generateDigest();
+    probeFailSpy.mockRestore();
+    expect(failClosedDigest.yesterdayMetrics.payments).toBe('UNKNOWN');
+    expect(failClosedDigest.topPainPoints.some(p => p.metric === 'verified_revenue = UNAVAILABLE')).toBe(true);
   });
 });

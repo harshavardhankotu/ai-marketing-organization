@@ -1491,11 +1491,11 @@ apiRouter.get('/cron/status', async (c) => {
     status = 'CONFIGURED';
   } else if (!isRecent) {
     status = 'STALE';
-  } else if (hasErrorWf || queueStats.failedPermanently > 0) {
+  } else if (queueStats.status === 'UNAVAILABLE' || hasErrorWf || (queueStats.failedPermanently ?? 0) > 0) {
     status = 'ERROR';
-  } else if (hasBlockedWf || queueStats.blocked > 0) {
+  } else if (hasBlockedWf || (queueStats.blocked ?? 0) > 0) {
     status = 'BLOCKED';
-  } else if (hasPartialWf || queueStats.partial > 0 || queueStats.deferred > 0 || queueStats.overdueCount > 0) {
+  } else if (hasPartialWf || (queueStats.partial ?? 0) > 0 || (queueStats.deferred ?? 0) > 0 || (queueStats.overdueCount ?? 0) > 0) {
     status = 'PARTIAL';
   } else if (totalPings > 0 && queueStats.overdueCount === 0 && !hasBlockedWf && !hasErrorWf && !hasPartialWf) {
     status = 'HEALTHY';

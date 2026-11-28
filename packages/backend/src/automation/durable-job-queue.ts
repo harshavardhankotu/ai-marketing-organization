@@ -156,7 +156,7 @@ export class DurableJobQueue {
     const organizationId = options.organizationId || 'org_owner_primary';
     const priority = options.priority !== undefined ? options.priority : getWorkflowPriorityLane(options.workflowId);
     const maxAttempts = options.maxAttempts || 3;
-    const availableAt = options.availableAt || new Date().toISOString();
+    const availableAt = this.normalizeUtcTimestamp(options.availableAt);
     const payloadJson = JSON.stringify(options.payload || {});
 
     // First, check if job with idempotencyKey already exists
@@ -281,10 +281,7 @@ export class DurableJobQueue {
       const organizationId = opt.organizationId || 'org_owner_primary';
       const priority = opt.priority !== undefined ? opt.priority : getWorkflowPriorityLane(opt.workflowId);
       const maxAttempts = opt.maxAttempts || 3;
-      const rawAvail = opt.availableAt || new Date().toISOString();
-      const availableAt = /^\d{4}-\d{2}-\d{2}T/.test(rawAvail)
-        ? rawAvail.replace('T', ' ').slice(0, 19)
-        : rawAvail;
+      const availableAt = this.normalizeUtcTimestamp(opt.availableAt);
       const payloadJson = JSON.stringify(opt.payload || {});
 
       const insertSql = `
@@ -478,8 +475,6 @@ export class DurableJobQueue {
     result: Record<string, any> = {},
     leaseToken?: string
   ): Promise<{ success: boolean; rowsAffected: number }> {
-    await this.ensureTerminalSummaryInitialized();
-
     const resJson = JSON.stringify(result || {});
     let sql = `
       UPDATE automation_jobs
@@ -500,23 +495,12 @@ export class DurableJobQueue {
     }
 
     let rowsAffected = 0;
-    const completedAtNow = new Date().toISOString().replace('T', ' ').slice(0, 19);
     if (isProduction()) {
       const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
       rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
-      if (rowsAffected > 0) {
-        await this.recordTerminalTransition(status, rowsAffected, completedAtNow, true);
-      }
     } else {
-      const db = getDb();
-      const tx = db.transaction(() => {
-        const res = db.prepare(sql).run(...params);
-        rowsAffected = res.changes;
-        if (rowsAffected > 0) {
-          this.applyAtomicTerminalSync(db, status, rowsAffected, completedAtNow, true);
-        }
-      });
-      tx();
+      const res = getDb().prepare(sql).run(...params);
+      rowsAffected = res.changes;
     }
 
     if (leaseToken && rowsAffected === 0) {
@@ -607,8 +591,6 @@ export class DurableJobQueue {
       return 'RETRY_WAIT';
     } else {
       // Non-transient or exhausted retries
-      await this.ensureTerminalSummaryInitialized();
-
       let sql = `
         UPDATE automation_jobs
         SET status = 'FAILED_PERMANENTLY',
@@ -631,19 +613,9 @@ export class DurableJobQueue {
       if (isProduction()) {
         const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
         rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
-        if (rowsAffected > 0) {
-          await this.recordTerminalTransition('FAILED_PERMANENTLY', rowsAffected);
-        }
       } else {
-        const db = getDb();
-        const tx = db.transaction(() => {
-          const res = db.prepare(sql).run(...params);
-          rowsAffected = res.changes;
-          if (rowsAffected > 0) {
-            this.applyAtomicTerminalSync(db, 'FAILED_PERMANENTLY', rowsAffected);
-          }
-        });
-        tx();
+        const res = getDb().prepare(sql).run(...params);
+        rowsAffected = res.changes;
       }
 
       if (rowsAffected === 0) {
@@ -744,416 +716,46 @@ export class DurableJobQueue {
     return row ? this.mapJobRow(row) : null;
   }
 
-  private static readonly TERMINAL_STATUS_LIST = [
-    'COMPLETED',
-    'COMPLETED_WITH_FINDINGS',
-    'COMPLETED_NO_FINDINGS',
-    'NO_ACTION_DUE',
-    'PARTIAL',
-    'DEFERRED',
-    'FAILED_PERMANENTLY'
-  ] as const;
-
-  private static readonly SUCCESSFUL_COMPLETION_STATUSES = new Set([
-    'COMPLETED',
-    'COMPLETED_WITH_FINDINGS',
-    'COMPLETED_NO_FINDINGS',
-    'NO_ACTION_DUE'
-  ]);
-
-  private static readonly TERMINAL_COUNTER_PREFIX = 'queue_terminal_cnt:';
-  private static readonly TERMINAL_LAST_SUCCESS_ID = 'queue_terminal_last_success';
-  private static readonly TERMINAL_META_ID = 'queue_terminal_summary_meta';
-  private static readonly COLD_START_RECONCILE_LIMIT = 200;
-
-  private buildAtomicCounterOp(status: string, delta: number): { sql: string; params: any[] } {
-    const id = `${DurableJobQueue.TERMINAL_COUNTER_PREFIX}${status}`;
-    const sql = `
-      INSERT INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at)
-      VALUES (?, 'QUEUE_SUMMARY', 0, json_object('count', ?, 'initializedAt', datetime('now')), datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET
-        metadata_json = json_set(
-          CASE WHEN json_valid(cron_telemetry.metadata_json) THEN cron_telemetry.metadata_json ELSE '{}' END,
-          '$.count',
-          COALESCE(CAST(json_extract(cron_telemetry.metadata_json, '$.count') AS INTEGER), 0) + ?
-        ),
-        updated_at = datetime('now')
-    `;
-    return { sql, params: [id, delta, delta] };
+  private normalizeUtcTimestamp(val?: string | Date | null): string {
+    const formatUtc = (d: Date): string => d.toISOString().replace('T', ' ').slice(0, 19);
+    if (!val) return formatUtc(new Date());
+    if (val instanceof Date) {
+      return Number.isFinite(val.getTime()) ? formatUtc(val) : formatUtc(new Date());
+    }
+    const s = String(val).trim();
+    if (!s) return formatUtc(new Date());
+    const parsed = /[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)
+      ? new Date(s)
+      : new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`);
+    return Number.isFinite(parsed.getTime()) ? formatUtc(parsed) : formatUtc(new Date());
   }
 
-  private buildAtomicLastSuccessOp(completedAt: string): { sql: string; params: any[] } {
-    const sql = `
-      INSERT INTO cron_telemetry (id, status, total_pings, last_successful_cycle, metadata_json, updated_at)
-      VALUES (?, 'QUEUE_SUMMARY', 0, ?, json_object('lastSuccessfulExecutionAt', ?, 'initializedAt', datetime('now')), datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET
-        last_successful_cycle = CASE
-          WHEN cron_telemetry.last_successful_cycle IS NULL OR excluded.last_successful_cycle >= cron_telemetry.last_successful_cycle
-            THEN excluded.last_successful_cycle
-          ELSE cron_telemetry.last_successful_cycle
-        END,
-        metadata_json = json_set(
-          CASE WHEN json_valid(cron_telemetry.metadata_json) THEN cron_telemetry.metadata_json ELSE '{}' END,
-          '$.lastSuccessfulExecutionAt',
-          CASE
-            WHEN cron_telemetry.last_successful_cycle IS NULL OR excluded.last_successful_cycle >= cron_telemetry.last_successful_cycle
-              THEN excluded.last_successful_cycle
-            ELSE cron_telemetry.last_successful_cycle
-          END
-        ),
-        updated_at = datetime('now')
-    `;
-    return { sql, params: [DurableJobQueue.TERMINAL_LAST_SUCCESS_ID, completedAt, completedAt] };
-  }
-
-  private applyAtomicTerminalSync(
-    db: any,
-    status: string,
-    count: number,
-    completedAt?: string | null,
-    countsAsWorkflowSuccess: boolean = true
-  ): void {
-    if (count <= 0) return;
-    if (!(DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(status)) return;
-    const counterOp = this.buildAtomicCounterOp(status, count);
-    db.prepare(counterOp.sql).run(...counterOp.params);
-    if (countsAsWorkflowSuccess && DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(status)) {
-      const ts = completedAt || new Date().toISOString().replace('T', ' ').slice(0, 19);
-      const lsOp = this.buildAtomicLastSuccessOp(ts);
-      db.prepare(lsOp.sql).run(...lsOp.params);
-    }
-  }
-
-  private async markSummaryNeedsReconcile(reason: string): Promise<void> {
-    try {
-      const sql = `
-        INSERT INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at)
-        VALUES (?, 'QUEUE_SUMMARY', 0, json_object('boundedInit', true, 'backfillComplete', false, 'summaryNeedsReconcile', true, 'lastError', ?), datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET
-          metadata_json = json_set(
-            CASE WHEN json_valid(cron_telemetry.metadata_json) THEN cron_telemetry.metadata_json ELSE '{}' END,
-            '$.summaryNeedsReconcile', json('true'),
-            '$.lastError', ?
-          ),
-          updated_at = datetime('now')
-      `;
-      if (isProduction()) {
-        await this.d1Repo.executeWrite('cron_telemetry', sql, [DurableJobQueue.TERMINAL_META_ID, reason.slice(0, 200), reason.slice(0, 200)]);
-      } else {
-        getDb().prepare(sql).run(DurableJobQueue.TERMINAL_META_ID, reason.slice(0, 200), reason.slice(0, 200));
-      }
-    } catch {}
-  }
-
-  public async ensureTerminalSummaryInitialized(limit: number = DurableJobQueue.COLD_START_RECONCILE_LIMIT): Promise<void> {
-    const metaSql = `SELECT metadata_json FROM cron_telemetry WHERE id = ?`;
-    let existingMeta: any = null;
-    try {
-      existingMeta = isProduction()
-        ? await this.d1Repo.queryOne('cron_telemetry', metaSql, [DurableJobQueue.TERMINAL_META_ID])
-        : getDb().prepare(metaSql).get(DurableJobQueue.TERMINAL_META_ID);
-    } catch {}
-
-    if (existingMeta?.metadata_json) {
-      return;
-    }
-
-    // Bounded deterministic cold-start initialization ordered ASC by terminal time + id
-    const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    const boundedSql = `
-      SELECT id, status, completed_at, COALESCE(completed_at, updated_at) AS term_ts
-      FROM automation_jobs
-      WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
-      ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC
-      LIMIT ?
-    `;
-    let rows: any[] = [];
-    try {
-      rows = isProduction()
-        ? await this.d1Repo.query<any>('automation_jobs', boundedSql, [boundedLimit])
-        : (getDb().prepare(boundedSql).all(boundedLimit) as any[]);
-    } catch {}
-
-    const counts: Record<string, number> = {};
-    for (const st of DurableJobQueue.TERMINAL_STATUS_LIST) counts[st] = 0;
-    let lastSuccess: string | null = null;
-    const toMs = (v: string) => new Date(v.includes('T') ? (v.endsWith('Z') ? v : `${v}Z`) : `${v.replace(' ', 'T')}Z`).getTime();
-
-    for (const r of rows) {
-      const st = String(r?.status || '');
-      if ((DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(st)) {
-        counts[st] = (counts[st] || 0) + 1;
-        if (DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(st) && r?.completed_at) {
-          const ts = String(r.completed_at);
-          if (!lastSuccess || toMs(ts) > toMs(lastSuccess)) {
-            lastSuccess = ts;
-          }
-        }
-      }
-    }
-
-    const backfillComplete = rows.length < boundedLimit;
-    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null;
-    const cursorCompletedAt = lastRow ? String(lastRow.term_ts || '') : null;
-    const cursorId = lastRow ? String(lastRow.id || '') : null;
-    const metaPayload = JSON.stringify({
-      boundedInit: true,
-      backfillComplete,
-      summaryNeedsReconcile: false,
-      reconciledCount: rows.length,
-      cursorCompletedAt,
-      cursorId,
-      initializedAt: new Date().toISOString()
-    });
-
-    const ops: Array<{ table: any; sql: string; params: any[] }> = [];
-    for (const st of DurableJobQueue.TERMINAL_STATUS_LIST) {
-      if (counts[st] > 0) {
-        const op = this.buildAtomicCounterOp(st, counts[st]);
-        ops.push({ table: 'cron_telemetry', sql: op.sql, params: op.params });
-      }
-    }
-    if (lastSuccess) {
-      const lsOp = this.buildAtomicLastSuccessOp(lastSuccess);
-      ops.push({ table: 'cron_telemetry', sql: lsOp.sql, params: lsOp.params });
-    }
-    ops.push({
-      table: 'cron_telemetry',
-      sql: `INSERT OR IGNORE INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at) VALUES (?, 'QUEUE_SUMMARY', 0, ?, datetime('now'))`,
-      params: [DurableJobQueue.TERMINAL_META_ID, metaPayload]
-    });
-
-    try {
-      if (isProduction()) {
-        await this.d1Repo.executeBatch(ops);
-      } else {
-        const db = getDb();
-        const tx = db.transaction(() => {
-          for (const op of ops) db.prepare(op.sql).run(...op.params);
-        });
-        tx();
-      }
-    } catch (err: any) {
-      await this.markSummaryNeedsReconcile(err?.message || 'INIT_FAILED');
-    }
-  }
-
-  public async reconcileTerminalSummaryBatch(limit: number = 200): Promise<{ processed: number; backfillComplete: boolean }> {
-    await this.ensureTerminalSummaryInitialized(limit);
-    const metaSql = `SELECT metadata_json FROM cron_telemetry WHERE id = ?`;
-    const metaRow = isProduction()
-      ? await this.d1Repo.queryOne<any>('cron_telemetry', metaSql, [DurableJobQueue.TERMINAL_META_ID])
-      : (getDb().prepare(metaSql).get(DurableJobQueue.TERMINAL_META_ID) as any);
-
-    let meta: any = {};
-    try {
-      meta = typeof metaRow?.metadata_json === 'string' ? JSON.parse(metaRow.metadata_json) : (metaRow?.metadata_json || {});
-    } catch {}
-
-    if (meta.backfillComplete === true && !meta.summaryNeedsReconcile) {
-      return { processed: 0, backfillComplete: true };
-    }
-
-    const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    const hasCursor = Boolean(meta.cursorCompletedAt && meta.cursorId && !meta.summaryNeedsReconcile);
-    const batchSql = hasCursor
-      ? `
-        SELECT id, status, completed_at, COALESCE(completed_at, updated_at) AS term_ts
-        FROM automation_jobs
-        WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
-          AND (COALESCE(completed_at, updated_at) > ? OR (COALESCE(completed_at, updated_at) = ? AND id > ?))
-        ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC
-        LIMIT ?
-      `
-      : `
-        SELECT id, status, completed_at, COALESCE(completed_at, updated_at) AS term_ts
-        FROM automation_jobs
-        WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
-        ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC
-        LIMIT ?
-      `;
-    const params = hasCursor ? [meta.cursorCompletedAt, meta.cursorCompletedAt, meta.cursorId, boundedLimit] : [boundedLimit];
-
-    const rows = isProduction()
-      ? await this.d1Repo.query<any>('automation_jobs', batchSql, params)
-      : (getDb().prepare(batchSql).all(...params) as any[]);
-
-    const counts: Record<string, number> = {};
-    let lastSuccess: string | null = null;
-    const toMs = (v: string) => new Date(v.includes('T') ? (v.endsWith('Z') ? v : `${v}Z`) : `${v.replace(' ', 'T')}Z`).getTime();
-
-    for (const r of rows) {
-      const st = String(r?.status || '');
-      if ((DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(st)) {
-        counts[st] = (counts[st] || 0) + 1;
-        if (DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(st) && r?.completed_at) {
-          const ts = String(r.completed_at);
-          if (!lastSuccess || toMs(ts) > toMs(lastSuccess)) {
-            lastSuccess = ts;
-          }
-        }
-      }
-    }
-
-    const backfillComplete = rows.length < boundedLimit;
-    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null;
-    const nextCursorCompletedAt = lastRow ? String(lastRow.term_ts || '') : (meta.cursorCompletedAt || null);
-    const nextCursorId = lastRow ? String(lastRow.id || '') : (meta.cursorId || null);
-    const nextMetaPayload = JSON.stringify({
-      boundedInit: true,
-      backfillComplete,
-      summaryNeedsReconcile: false,
-      reconciledCount: Number(meta.reconciledCount || 0) + rows.length,
-      cursorCompletedAt: nextCursorCompletedAt,
-      cursorId: nextCursorId,
-      initializedAt: meta.initializedAt || new Date().toISOString()
-    });
-
-    const ops: Array<{ table: any; sql: string; params: any[] }> = [];
-    if (meta.summaryNeedsReconcile && !hasCursor) {
-      // Full reset of counter rows when repairing drift from start
-      for (const st of DurableJobQueue.TERMINAL_STATUS_LIST) {
-        ops.push({
-          table: 'cron_telemetry',
-          sql: `INSERT OR REPLACE INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at) VALUES (?, 'QUEUE_SUMMARY', 0, json_object('count', ?, 'initializedAt', datetime('now')), datetime('now'))`,
-          params: [`${DurableJobQueue.TERMINAL_COUNTER_PREFIX}${st}`, counts[st] || 0]
-        });
-      }
-    } else {
-      for (const [st, cnt] of Object.entries(counts)) {
-        if (cnt > 0) {
-          const op = this.buildAtomicCounterOp(st, cnt);
-          ops.push({ table: 'cron_telemetry', sql: op.sql, params: op.params });
-        }
-      }
-    }
-    if (lastSuccess) {
-      const lsOp = this.buildAtomicLastSuccessOp(lastSuccess);
-      ops.push({ table: 'cron_telemetry', sql: lsOp.sql, params: lsOp.params });
-    }
-    ops.push({
-      table: 'cron_telemetry',
-      sql: `INSERT OR REPLACE INTO cron_telemetry (id, status, total_pings, metadata_json, updated_at) VALUES (?, 'QUEUE_SUMMARY', 0, ?, datetime('now'))`,
-      params: [DurableJobQueue.TERMINAL_META_ID, nextMetaPayload]
-    });
-
-    if (isProduction()) {
-      await this.d1Repo.executeBatch(ops);
-    } else {
-      const db = getDb();
-      const tx = db.transaction(() => {
-        for (const op of ops) db.prepare(op.sql).run(...op.params);
-      });
-      tx();
-    }
-
-    return { processed: rows.length, backfillComplete };
-  }
-
-  private async readTerminalSummary(): Promise<{
-    counts: Record<string, number>;
-    lastSuccessfulExecutionAt: string | null;
-    terminalCountsComplete: boolean;
-  }> {
-    await this.ensureTerminalSummaryInitialized();
-    const counts: Record<string, number> = {};
-    for (const st of DurableJobQueue.TERMINAL_STATUS_LIST) counts[st] = 0;
-    let lastSuccessfulExecutionAt: string | null = null;
-    let terminalCountsComplete = false;
-
-    const readSql = `SELECT id, metadata_json, last_successful_cycle FROM cron_telemetry WHERE id LIKE 'queue_terminal_%'`;
-    let rows: any[] = [];
-    try {
-      rows = isProduction()
-        ? await this.d1Repo.query<any>('cron_telemetry', readSql, [])
-        : (getDb().prepare(readSql).all() as any[]);
-    } catch {}
-
-    for (const r of rows) {
-      const id = String(r?.id || '');
-      if (id === DurableJobQueue.TERMINAL_META_ID) {
-        try {
-          const parsed = typeof r.metadata_json === 'string' ? JSON.parse(r.metadata_json) : r.metadata_json;
-          terminalCountsComplete = Boolean(parsed?.backfillComplete) && !Boolean(parsed?.summaryNeedsReconcile);
-        } catch {}
-      } else if (id.startsWith(DurableJobQueue.TERMINAL_COUNTER_PREFIX)) {
-        const st = id.slice(DurableJobQueue.TERMINAL_COUNTER_PREFIX.length);
-        try {
-          const parsed = typeof r.metadata_json === 'string' ? JSON.parse(r.metadata_json) : r.metadata_json;
-          counts[st] = Number(parsed?.count || 0);
-        } catch {}
-      } else if (id === DurableJobQueue.TERMINAL_LAST_SUCCESS_ID) {
-        if (r.last_successful_cycle) {
-          lastSuccessfulExecutionAt = String(r.last_successful_cycle);
-        } else {
-          try {
-            const parsed = typeof r.metadata_json === 'string' ? JSON.parse(r.metadata_json) : r.metadata_json;
-            if (parsed?.lastSuccessfulExecutionAt) lastSuccessfulExecutionAt = String(parsed.lastSuccessfulExecutionAt);
-          } catch {}
-        }
-      }
-    }
-
-    return { counts, lastSuccessfulExecutionAt, terminalCountsComplete };
-  }
-
-  private async recordTerminalTransition(
-    status: string,
-    count: number,
-    completedAt?: string | null,
-    countsAsWorkflowSuccess: boolean = true
-  ): Promise<void> {
-    if (count <= 0) return;
-    if (!(DurableJobQueue.TERMINAL_STATUS_LIST as readonly string[]).includes(status)) return;
-
-    try {
-      const ops: Array<{ table: any; sql: string; params: any[] }> = [];
-      const counterOp = this.buildAtomicCounterOp(status, count);
-      ops.push({ table: 'cron_telemetry', sql: counterOp.sql, params: counterOp.params });
-
-      if (countsAsWorkflowSuccess && DurableJobQueue.SUCCESSFUL_COMPLETION_STATUSES.has(status)) {
-        const ts = completedAt || new Date().toISOString().replace('T', ' ').slice(0, 19);
-        const lsOp = this.buildAtomicLastSuccessOp(ts);
-        ops.push({ table: 'cron_telemetry', sql: lsOp.sql, params: lsOp.params });
-      }
-
-      if (isProduction()) {
-        await this.d1Repo.executeBatch(ops);
-      } else {
-        const db = getDb();
-        const tx = db.transaction(() => {
-          for (const op of ops) db.prepare(op.sql).run(...op.params);
-        });
-        tx();
-      }
-    } catch (err: any) {
-      await this.markSummaryNeedsReconcile(err?.message || 'TERMINAL_TRANSITION_WRITE_FAILED');
-    }
-  }
 
   /**
    * Retrieves queue telemetry and comprehensive observability metrics (V4.8 Spec Phase 2D).
+   * Uses stateless, index-bounded queries (7-day window, LIMIT 200) and fails closed on read errors.
    */
   public async getQueueStats(): Promise<{
-    queued: number;
-    running: number;
-    completed: number;
-    completedWithFindings: number;
-    noActionDue: number;
-    partial: number;
-    deferred: number;
-    blocked: number;
-    retryWait: number;
-    failedPermanently: number;
-    failedTotal: number;
-    expiredLeases: number;
-    overdueCount: number;
-    oldestOverdueAgeMinutes: number;
-    oldestQueuedAgeMinutes: number;
+    status: 'OK' | 'UNAVAILABLE';
+    terminalStatsScope: 'RECENT_BOUNDED_7D';
+    queued: number | null;
+    running: number | null;
+    completed: number | null;
+    completedWithFindings: number | null;
+    noActionDue: number | null;
+    partial: number | null;
+    deferred: number | null;
+    blocked: number | null;
+    retryWait: number | null;
+    failedPermanently: number | null;
+    failedTotal: number | null;
+    expiredLeases: number | null;
+    overdueCount: number | null;
+    oldestOverdueAgeMinutes: number | null;
+    oldestQueuedAgeMinutes: number | null;
     lastSuccessfulExecutionAt: string | null;
-    terminalCountsComplete: boolean;
   }> {
-    const sql = `
+    const activeSql = `
       SELECT
         status,
         COUNT(*) as cnt,
@@ -1165,21 +767,75 @@ export class DurableJobQueue {
       WHERE status IN ('QUEUED', 'RETRY_WAIT', 'RUNNING', 'BLOCKED')
       GROUP BY status
     `;
+    const terminalSql = `
+      SELECT status, COUNT(*) as cnt
+      FROM (
+        SELECT status
+        FROM automation_jobs
+        WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
+          AND available_at >= datetime('now', '-7 days')
+        ORDER BY available_at DESC
+        LIMIT 200
+      )
+      GROUP BY status
+    `;
+    const lastSuccessSql = `
+      SELECT COALESCE(completed_at, updated_at) AS ts
+      FROM automation_jobs
+      WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE')
+        AND COALESCE(last_error, '') NOT IN ('SUPERSEDED_DEDUP', 'PARKED_CANCELLED', 'CANCELLED_WORKFLOW_PARKED')
+      ORDER BY COALESCE(completed_at, updated_at) DESC
+      LIMIT 1
+    `;
 
     let rows: any[] = [];
-    if (isProduction()) {
-      rows = await this.d1Repo.query('automation_jobs', sql, []);
-    } else {
-      rows = getDb().prepare(sql).all();
+    let terminalRows: any[] = [];
+    let lastSuccessRow: any = null;
+    try {
+      if (isProduction()) {
+        [rows, terminalRows, lastSuccessRow] = await Promise.all([
+          this.d1Repo.query('automation_jobs', activeSql, []),
+          this.d1Repo.query('automation_jobs', terminalSql, []),
+          this.d1Repo.queryOne('automation_jobs', lastSuccessSql, [])
+        ]);
+      } else {
+        const db = getDb();
+        rows = db.prepare(activeSql).all() as any[];
+        terminalRows = db.prepare(terminalSql).all() as any[];
+        lastSuccessRow = db.prepare(lastSuccessSql).get() as any;
+      }
+    } catch {
+      return {
+        status: 'UNAVAILABLE',
+        terminalStatsScope: 'RECENT_BOUNDED_7D',
+        queued: null,
+        running: null,
+        completed: null,
+        completedWithFindings: null,
+        noActionDue: null,
+        partial: null,
+        deferred: null,
+        blocked: null,
+        retryWait: null,
+        failedPermanently: null,
+        failedTotal: null,
+        expiredLeases: null,
+        overdueCount: null,
+        oldestOverdueAgeMinutes: null,
+        oldestQueuedAgeMinutes: null,
+        lastSuccessfulExecutionAt: null
+      };
     }
 
-    const terminalSummary = await this.readTerminalSummary();
-    const counts: Record<string, number> = { ...terminalSummary.counts };
+    const counts: Record<string, number> = {};
+    for (const t of terminalRows) {
+      counts[String(t.status || '')] = Number(t.cnt || 0);
+    }
     let totalOverdue = 0;
     let totalExpiredLeases = 0;
     let oldestOverdueTs: string | null = null;
     let oldestQueuedTs: string | null = null;
-    const lastSuccessTs: string | null = terminalSummary.lastSuccessfulExecutionAt;
+    const lastSuccessTs: string | null = lastSuccessRow?.ts ? String(lastSuccessRow.ts) : null;
 
     const toUtcMs = (ts: string): number => {
       const s = String(ts || '').trim();
@@ -1211,19 +867,15 @@ export class DurableJobQueue {
       oldestOverdueAgeMinutes = Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 60000)) : 0;
     }
 
-    const toUtcAgeMs = (ts: string): number => {
-      const s = String(ts || '').trim();
-      if (!s) return NaN;
-      if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime();
-      return new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`).getTime();
-    };
     let oldestQueuedAgeMinutes = 0;
     if (oldestQueuedTs) {
-      const diffMs = Date.now() - toUtcAgeMs(oldestQueuedTs);
+      const diffMs = Date.now() - toUtcMs(oldestQueuedTs);
       oldestQueuedAgeMinutes = Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 60000)) : 0;
     }
 
     return {
+      status: 'OK',
+      terminalStatsScope: 'RECENT_BOUNDED_7D',
       queued: counts['QUEUED'] || 0,
       running: counts['RUNNING'] || 0,
       completed: counts['COMPLETED'] || 0,
@@ -1239,8 +891,7 @@ export class DurableJobQueue {
       overdueCount: totalOverdue,
       oldestOverdueAgeMinutes,
       oldestQueuedAgeMinutes,
-      lastSuccessfulExecutionAt: lastSuccessTs,
-      terminalCountsComplete: terminalSummary.terminalCountsComplete
+      lastSuccessfulExecutionAt: lastSuccessTs
     };
   }
 
@@ -1320,7 +971,6 @@ export class DurableJobQueue {
     };
 
     try {
-      await this.ensureTerminalSummaryInitialized();
       const candidateDueQueuedSql = `
         SELECT id, workflow_id, available_at, created_at
         FROM automation_jobs
@@ -1435,7 +1085,6 @@ export class DurableJobQueue {
              AND status IN ('QUEUED', 'RETRY_WAIT')`,
           parkedQueuedIds
         );
-        await this.recordTerminalTransition('DEFERRED', parkedDeferred);
       }
 
       if (refreshIds.length > 0) {
@@ -1465,7 +1114,6 @@ export class DurableJobQueue {
             AND status IN ('QUEUED', 'RETRY_WAIT')
         `;
         supersededStaleCount = await execWrite(staleSql, [staleDispositionJson, ...staleIds]);
-        await this.recordTerminalTransition('DEFERRED', supersededStaleCount);
       }
     } catch (err: any) {
       console.warn(`[JobQueue] recoverStaleAndBlockedJobs stale notice: ${err.message}`);
@@ -1487,7 +1135,6 @@ export class DurableJobQueue {
       `;
       try {
         cancelledParkedBlockedCount = await execWrite(parkedSql, parkedIds);
-        await this.recordTerminalTransition('NO_ACTION_DUE', cancelledParkedBlockedCount, null, false);
       } catch (err: any) {
         console.warn(`[JobQueue] recoverStaleAndBlockedJobs parked notice: ${err.message}`);
       }
@@ -1536,7 +1183,6 @@ export class DurableJobQueue {
             [errTag, resJson, b.id]
           );
           deferredMissingCredentialCount += upd;
-          await this.recordTerminalTransition('DEFERRED', upd);
         } else {
           const upd = await execWrite(
             `UPDATE automation_jobs
@@ -1579,11 +1225,6 @@ export class DurableJobQueue {
     }
 
     const compactedDuplicateCount = await this.compactStaleDuplicateQueueJobs();
-
-    // Advance one bounded backfill batch during idle/recovery maintenance if incomplete
-    try {
-      await this.reconcileTerminalSummaryBatch(DurableJobQueue.COLD_START_RECONCILE_LIMIT);
-    } catch {}
 
     // 3. Schedule 1 fresh job for each active enabled workflow that has no remaining active job
     let freshJobsScheduledCount = 0;
@@ -1644,8 +1285,8 @@ export class DurableJobQueue {
   }
 
   public async compactStaleDuplicateQueueJobs(): Promise<number> {
+    let totalChanged = 0;
     try {
-      await this.ensureTerminalSummaryInitialized();
       // PR #92 / PR #106: Identical deterministic ordering in SQL and JS (available_at DESC, id DESC) within due & future buckets
       const queuedDueSql = `SELECT id, workflow_id, available_at, created_at FROM automation_jobs WHERE status = 'QUEUED' AND available_at <= datetime('now') ORDER BY available_at DESC, id DESC LIMIT 100`;
       const queuedFutureSql = `SELECT id, workflow_id, available_at, created_at FROM automation_jobs WHERE status = 'QUEUED' AND available_at > datetime('now') ORDER BY available_at DESC, id DESC LIMIT 50`;
@@ -1674,7 +1315,16 @@ export class DurableJobQueue {
       };
       dueRows.sort(sortNewest);
       futureRows.sort(sortNewest);
-      const rows = [...dueRows, ...futureRows];
+
+      // Deduplicate candidate rows across due and future buckets in case datetime('now') ticks between queries
+      const seenIds = new Set<string>();
+      const rows: any[] = [];
+      for (const row of [...dueRows, ...futureRows]) {
+        const id = String(row?.id || '');
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+        rows.push(row);
+      }
 
       if (rows.length <= 1) return 0;
 
@@ -1691,7 +1341,6 @@ export class DurableJobQueue {
 
       if (duplicateIds.length === 0) return 0;
 
-      let totalChanged = 0;
       for (let i = 0; i < duplicateIds.length; i += 50) {
         const idsToUpdate = duplicateIds.slice(i, i + 50);
         const placeholders = idsToUpdate.map(() => '?').join(',');
@@ -1710,13 +1359,10 @@ export class DurableJobQueue {
           totalChanged += res.changes ?? 0;
         }
       }
-      if (totalChanged > 0) {
-        await this.recordTerminalTransition('NO_ACTION_DUE', totalChanged, null, false);
-      }
       return totalChanged;
     } catch (err: any) {
       console.warn(`[JobQueue] compactStaleDuplicateQueueJobs notice: ${err.message}`);
-      return 0;
+      return totalChanged;
     }
   }
 

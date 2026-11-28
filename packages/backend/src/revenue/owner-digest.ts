@@ -466,20 +466,29 @@ export class OwnerDigestService {
     } catch {}
 
     try {
-      const leadRow = db.prepare(`SELECT COUNT(*) as c FROM platform_prospects WHERE created_at LIKE ?`).get(`${yesterdayStr}%`) as any;
+      const leadRow = db.prepare(`
+        SELECT COUNT(*) as c FROM platform_prospects
+        WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')
+          AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR', 'homepage_b2b_inquiry')
+            OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+            OR status IN ('REPLIED', 'INBOUND_REQUEST'))
+          AND created_at LIKE ?
+      `).get(`${yesterdayStr}%`) as any;
       if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
     } catch {}
 
     try {
       const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
-      const payRow = db.prepare(`
-        SELECT SUM(amount_inr) as total FROM revenue_records
-        WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?
-      `).get(`${yesterdayStr}%`) as any;
-      if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
-        payments = payRow.total;
-      } else {
-        payments = 0;
+      if (hasIsTest !== null) {
+        const payRow = db.prepare(`
+          SELECT SUM(amount_inr) as total FROM revenue_records
+          WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?
+        `).get(`${yesterdayStr}%`) as any;
+        if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
+          payments = payRow.total;
+        } else {
+          payments = 0;
+        }
       }
     } catch {}
 
@@ -527,13 +536,15 @@ export class OwnerDigestService {
     const topPainPoints: PainPointItem[] = [];
 
     // 1. First pipeline stage with a count of 0
-    let verifiedRevenueCount = 0;
+    let verifiedRevenueCount: number | null = null;
     try {
       const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
-      const revRow = db.prepare(
-        `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
-      ).get() as any;
-      verifiedRevenueCount = Number(revRow?.count || 0);
+      if (hasIsTest !== null) {
+        const revRow = db.prepare(
+          `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
+        ).get() as any;
+        verifiedRevenueCount = Number(revRow?.count || 0);
+      }
     } catch {}
 
     let proposalsCount = 0;
@@ -542,7 +553,14 @@ export class OwnerDigestService {
       proposalsCount = Number(propRow?.count || 0);
     } catch {}
 
-    if (verifiedRevenueCount === 0) {
+    if (verifiedRevenueCount === null) {
+      topPainPoints.push({
+        rank: 1,
+        title: 'Payment Verification Schema Unavailable',
+        metric: 'verified_revenue = UNAVAILABLE',
+        ownerAction: 'Verify revenue_records schema and database connectivity.'
+      });
+    } else if (verifiedRevenueCount === 0) {
       if (proposalsCount === 0) {
         topPainPoints.push({
           rank: 1,
@@ -811,11 +829,11 @@ export class OwnerDigestService {
    * In production, queries Cloudflare D1 as the single source of truth without falling back to local SQLite.
    */
   private buildRealPaymentPredicate(hasIsTest: boolean): string {
-    const base = `(classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL') AND verified = 1 AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(verification_method, '')) NOT IN ('TEST', 'SANDBOX')`;
+    const base = `(classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL' OR classification = 'MANUAL_VERIFIED') AND verified = 1 AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(verification_method, '')) NOT IN ('TEST', 'SANDBOX')`;
     return hasIsTest ? `${base} AND (is_test = 0 OR is_test IS NULL)` : base;
   }
 
-  private async hasColumn(tableName: string, columnName: string): Promise<boolean> {
+  private async hasColumn(tableName: string, columnName: string): Promise<boolean | null> {
     try {
       if (isProduction() && !process.env.VITEST) {
         const row = await this.d1Repo.queryOne<{ name: string }>(
@@ -827,16 +845,16 @@ export class OwnerDigestService {
       }
       return this.hasLocalColumn(tableName, columnName);
     } catch {
-      return false;
+      return null;
     }
   }
 
-  private hasLocalColumn(tableName: string, columnName: string): boolean {
+  private hasLocalColumn(tableName: string, columnName: string): boolean | null {
     try {
       const cols = getDb().prepare(`PRAGMA table_info(${tableName})`).all() as any[];
       return cols.some(c => String(c?.name || '').toLowerCase() === columnName.toLowerCase());
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -1569,7 +1587,12 @@ export class OwnerDigestService {
     try {
       const leadRow = await this.d1Repo.queryOne<{ c: number }>(
         'platform_prospects',
-        `SELECT COUNT(*) as c FROM platform_prospects WHERE created_at LIKE ?`,
+        `SELECT COUNT(*) as c FROM platform_prospects
+         WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')
+           AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR', 'homepage_b2b_inquiry')
+             OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+             OR status IN ('REPLIED', 'INBOUND_REQUEST'))
+           AND created_at LIKE ?`,
         [`${yesterdayStr}%`]
       );
       if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
@@ -1577,16 +1600,18 @@ export class OwnerDigestService {
 
     try {
       const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
-      const payRow = await this.d1Repo.queryOne<{ total: number }>(
-        'revenue_records',
-        `SELECT SUM(amount_inr) as total FROM revenue_records
-         WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?`,
-        [`${yesterdayStr}%`]
-      );
-      if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
-        payments = payRow.total;
-      } else {
-        payments = 0;
+      if (hasIsTest !== null) {
+        const payRow = await this.d1Repo.queryOne<{ total: number }>(
+          'revenue_records',
+          `SELECT SUM(amount_inr) as total FROM revenue_records
+           WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?`,
+          [`${yesterdayStr}%`]
+        );
+        if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
+          payments = payRow.total;
+        } else {
+          payments = 0;
+        }
       }
     } catch {}
 
@@ -1637,14 +1662,16 @@ export class OwnerDigestService {
     const topPainPoints: PainPointItem[] = [];
 
     // 1. First pipeline stage with count of 0
-    let verifiedRevenueCount = 0;
+    let verifiedRevenueCount: number | null = null;
     try {
       const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
-      const revRow = await this.d1Repo.queryOne<{ count: number }>(
-        'revenue_records',
-        `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
-      );
-      verifiedRevenueCount = Number(revRow?.count || 0);
+      if (hasIsTest !== null) {
+        const revRow = await this.d1Repo.queryOne<{ count: number }>(
+          'revenue_records',
+          `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
+        );
+        verifiedRevenueCount = Number(revRow?.count || 0);
+      }
     } catch {}
 
     let proposalsCount = 0;
@@ -1656,7 +1683,14 @@ export class OwnerDigestService {
       proposalsCount = Number(propRow?.count || 0);
     } catch {}
 
-    if (verifiedRevenueCount === 0) {
+    if (verifiedRevenueCount === null) {
+      topPainPoints.push({
+        rank: 1,
+        title: 'Payment Verification Schema Unavailable',
+        metric: 'verified_revenue = UNAVAILABLE',
+        ownerAction: 'Verify revenue_records schema and D1 connectivity.'
+      });
+    } else if (verifiedRevenueCount === 0) {
       if (proposalsCount === 0) {
         topPainPoints.push({
           rank: 1,
