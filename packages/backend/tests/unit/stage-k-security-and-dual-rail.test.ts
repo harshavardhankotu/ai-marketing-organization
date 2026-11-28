@@ -331,7 +331,7 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       expect(outboundAmazonCalls.length).toBe(0);
 
       // 3. Verify GET /api/v1/public/amazon-redirect returns 302 with tag=harshavardhan-21
-      const redirRes = await app.request('/api/v1/public/amazon-redirect?q=Sony+WH-1000XM5');
+      const redirRes = await app.request('/api/v1/public/amazon-redirect?q=Sony+WH-1000XM5', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(redirRes.status).toBe(302);
       const redirLoc = redirRes.headers.get('location') || '';
       expect(redirLoc).toContain('amazon.in/s?k=');

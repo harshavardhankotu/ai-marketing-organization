@@ -1491,11 +1491,11 @@ apiRouter.get('/cron/status', async (c) => {
     status = 'CONFIGURED';
   } else if (!isRecent) {
     status = 'STALE';
-  } else if (hasErrorWf || queueStats.failedPermanently > 0) {
+  } else if (queueStats.status === 'UNAVAILABLE' || hasErrorWf || (queueStats.failedPermanently ?? 0) > 0) {
     status = 'ERROR';
-  } else if (hasBlockedWf || queueStats.blocked > 0) {
+  } else if (hasBlockedWf || (queueStats.blocked ?? 0) > 0) {
     status = 'BLOCKED';
-  } else if (hasPartialWf || queueStats.partial > 0 || queueStats.deferred > 0 || queueStats.overdueCount > 0) {
+  } else if (hasPartialWf || (queueStats.partial ?? 0) > 0 || (queueStats.deferred ?? 0) > 0 || (queueStats.overdueCount ?? 0) > 0) {
     status = 'PARTIAL';
   } else if (totalPings > 0 && queueStats.overdueCount === 0 && !hasBlockedWf && !hasErrorWf && !hasPartialWf) {
     status = 'HEALTHY';
@@ -9215,7 +9215,8 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
       'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
       'x-test-traffic': c.req.header('x-test-traffic') || '',
       'x-test-mode': c.req.header('x-test-mode') || '',
-      'x-owner-preview': c.req.header('x-owner-preview') || ''
+      'x-owner-preview': c.req.header('x-owner-preview') || '',
+      'x-internal-admin': c.req.header('x-internal-admin') || ''
     };
     if (c.req.query('test_traffic') === 'true') {
       headersMap['x-test-traffic'] = 'true';
@@ -9249,6 +9250,15 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
     };
 
     const result = await trackingEngine.resolveReferralClick(offerSlug, referralId, clickData);
+    if (deviceClass !== 'human' && deviceClass !== 'browser_candidate') {
+      return c.json({
+        success: true,
+        redirectSuppressed: true,
+        reason: 'NON_HUMAN_TRAFFIC_SUPPRESSED',
+        trafficClass: deviceClass,
+        fallbackPath: '/deals'
+      }, 200);
+    }
     return c.redirect(result.destinationUrl, 302);
   } catch (err: any) {
     const sanitizedMsg = (err.message || '').replace(/([?&]tag=)[^&]+/gi, '$1[REDACTED]');
@@ -10660,6 +10670,15 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
 
   const amzClientInfo = getTrustedClientIp(c);
   const amzUserAgent = c.req.header('user-agent') || '';
+  const { classifyTraffic: classifyAmzTraffic } = await import('../commission/referral-tracking.js');
+  const amzTrafficClass = classifyAmzTraffic(amzUserAgent, amzClientInfo.ip, {
+    'x-diagnostic': c.req.header('x-diagnostic') || '',
+    'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
+    'x-test-traffic': c.req.header('x-test-traffic') || '',
+    'x-test-mode': c.req.header('x-test-mode') || '',
+    'x-owner-preview': c.req.header('x-owner-preview') || '',
+    'x-internal-admin': c.req.header('x-internal-admin') || ''
+  });
   const rawAmzPlacementOut = c.req.query('placement') || c.req.query('utm_placement') || 'amazon_dual_rail';
   const sanitizedAmzPlacementOut = /^[a-zA-Z0-9_\-]{1,64}$/.test(rawAmzPlacementOut) ? rawAmzPlacementOut : 'amazon_dual_rail';
   const { recordShoppingFunnelEvent } = await import('../commission/shopping-funnel-tracker.js');
@@ -10682,8 +10701,22 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
     }
   });
 
+  if (!isAllowedAffiliateRedirectTraffic(amzTrafficClass)) {
+    return c.json({
+      success: true,
+      redirectSuppressed: true,
+      reason: 'NON_HUMAN_TRAFFIC_SUPPRESSED',
+      trafficClass: amzTrafficClass,
+      fallbackPath: '/deals'
+    }, 200);
+  }
+
   return c.redirect(targetUrl, 302);
 });
+
+function isAllowedAffiliateRedirectTraffic(trafficClass: string): boolean {
+  return trafficClass === 'human' || trafficClass === 'browser_candidate';
+}
 
 apiRouter.get('/public/deals/:id/redirect', async (c) => {
   const id = c.req.param('id');
@@ -10737,6 +10770,17 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   }
   const sectorCode = sectorDef.code;
 
+  const { classifyTraffic } = await import('../commission/referral-tracking.js');
+  const trafficClass = classifyTraffic(userAgent, clientInfo.ip, {
+    'x-diagnostic': c.req.header('x-diagnostic') || '',
+    'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
+    'x-test-traffic': c.req.header('x-test-traffic') || '',
+    'x-test-mode': c.req.header('x-test-mode') || '',
+    'x-owner-preview': c.req.header('x-owner-preview') || '',
+    'x-internal-admin': c.req.header('x-internal-admin') || ''
+  });
+  const allowAffiliateRedirect = isAllowedAffiliateRedirectTraffic(trafficClass);
+
   // Cryptographically strong unique click ID
   const { randomUUID } = await import('crypto');
   const clickId = `clk_${Date.now()}_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
@@ -10755,7 +10799,10 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   const isAmazonDeal = deal.affiliateNetwork === 'AMAZON_IN' ||
     (!deal.affiliateNetwork && /^https:\/\/(www\.)?amazon\.in\/.*(\/dp\/|\/gp\/product\/)/i.test(String(deal.productUrl || '')));
 
-  if (isAmazonDeal) {
+  if (!allowAffiliateRedirect) {
+    // Suppress Cuelinks convertLink / Amazon affiliate tag for non-human traffic; record diagnostic click row only.
+    targetUrl = String(deal.productUrl || '/deals');
+  } else if (isAmazonDeal) {
     const amazonTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
     if (!amazonTag) {
       return c.text('Affiliate monetization path temporarily unavailable: AMAZON_AFFILIATE_TAG unset; redirect suppressed', 503);
@@ -10833,26 +10880,18 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
   }
 
-  const { CuelinksV3Client: AllowlistClient } = await import('../commission/cuelinks-v3-client.js');
-  const { DealSsrfGuard } = await import('../commission/deal-ssrf-guard.js');
-  const { isAuthorizedAmazonTrackingUrl } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const ssrf = DealSsrfGuard.isSafePublicUrl(targetUrl);
-  const trackingAllowed = isAmazonDeal
-    ? isAuthorizedAmazonTrackingUrl(targetUrl)
-    : AllowlistClient.isAllowedTrackingUrl(targetUrl);
-  if (!ssrf.safe || !trackingAllowed) {
-    return c.text('Invalid destination URL', 503);
+  if (allowAffiliateRedirect) {
+    const { CuelinksV3Client: AllowlistClient } = await import('../commission/cuelinks-v3-client.js');
+    const { DealSsrfGuard } = await import('../commission/deal-ssrf-guard.js');
+    const { isAuthorizedAmazonTrackingUrl } = await import('../commission/autonomous-deal-discovery-engine.js');
+    const ssrf = DealSsrfGuard.isSafePublicUrl(targetUrl);
+    const trackingAllowed = isAmazonDeal
+      ? isAuthorizedAmazonTrackingUrl(targetUrl)
+      : AllowlistClient.isAllowedTrackingUrl(targetUrl);
+    if (!ssrf.safe || !trackingAllowed) {
+      return c.text('Invalid destination URL', 503);
+    }
   }
-
-  const { classifyTraffic } = await import('../commission/referral-tracking.js');
-  const trafficClass = classifyTraffic(userAgent, clientInfo.ip, {
-    'x-diagnostic': c.req.header('x-diagnostic') || '',
-    'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
-    'x-test-traffic': c.req.header('x-test-traffic') || '',
-    'x-test-mode': c.req.header('x-test-mode') || '',
-    'x-owner-preview': c.req.header('x-owner-preview') || '',
-    'x-internal-admin': c.req.header('x-internal-admin') || ''
-  });
 
   const partnerId = isAmazonDeal ? 'part_amazon_in' : 'part_cuelinks';
 
@@ -11000,6 +11039,16 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
         userAgent
       });
     } catch {}
+  }
+
+  if (trafficClass !== 'human' && trafficClass !== 'browser_candidate') {
+    return c.json({
+      success: true,
+      redirectSuppressed: true,
+      reason: 'NON_HUMAN_TRAFFIC_SUPPRESSED',
+      trafficClass,
+      fallbackPath: '/deals'
+    }, 200);
   }
 
   return c.redirect(targetUrl, 302);

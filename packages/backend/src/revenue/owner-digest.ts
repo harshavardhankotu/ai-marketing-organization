@@ -16,6 +16,7 @@
  */
 
 import { getDb } from '../db/client.js';
+import { D1Client } from '../db/d1-client.js';
 import { isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
@@ -237,9 +238,24 @@ export interface OwnerTodayDigest {
     createdAt: string;
   }>;
   autopilotStatus?: OutreachAutopilotHealth;
+  commerceAutopilotStatus?: {
+    latestSuccessfulCommercialWorkflow: string | null;
+    latestAttemptedWorkflow: string | null;
+    latestBudgetStoppedCycle: boolean;
+    eligibleDealInventoryCount: number | null;
+    genuineHumanOutboundClicks: number | null;
+    active: boolean;
+    status: 'ACTIVE' | 'INACTIVE_UNPROVEN';
+  };
   arosControlCenter?: ArosControlCenterSummary;
   sitefixFunnelAttribution?: SiteFixFunnelAttributionSummary;
 }
+
+export const GENUINE_HUMAN_CLICK_PREDICATE =
+  `(device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot', 'test', 'diagnostic', 'internal'))` +
+  ` AND COALESCE(placement, '') != 'direct_beacon'` +
+  ` AND COALESCE(source, '') != 'direct_beacon'` +
+  ` AND COALESCE(medium, '') != 'beacon'`;
 
 export class OwnerDigestService {
   private static instance: OwnerDigestService;
@@ -450,20 +466,29 @@ export class OwnerDigestService {
     } catch {}
 
     try {
-      const leadRow = db.prepare(`SELECT COUNT(*) as c FROM prospects WHERE created_at LIKE ?`).get(`${yesterdayStr}%`) as any;
+      const leadRow = db.prepare(`
+        SELECT COUNT(*) as c FROM platform_prospects
+        WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')
+          AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR', 'homepage_b2b_inquiry')
+            OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+            OR status IN ('REPLIED', 'INBOUND_REQUEST'))
+          AND created_at LIKE ?
+      `).get(`${yesterdayStr}%`) as any;
       if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
     } catch {}
 
     try {
-      const payRow = db.prepare(`
-        SELECT SUM(amount_inr) as total FROM revenue_records
-        WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
-          AND verified = 1 AND is_test = 0 AND timestamp LIKE ?
-      `).get(`${yesterdayStr}%`) as any;
-      if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
-        payments = payRow.total;
-      } else {
-        payments = 0;
+      const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
+      if (hasIsTest !== null) {
+        const payRow = db.prepare(`
+          SELECT SUM(amount_inr) as total FROM revenue_records
+          WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?
+        `).get(`${yesterdayStr}%`) as any;
+        if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
+          payments = payRow.total;
+        } else {
+          payments = 0;
+        }
       }
     } catch {}
 
@@ -511,10 +536,15 @@ export class OwnerDigestService {
     const topPainPoints: PainPointItem[] = [];
 
     // 1. First pipeline stage with a count of 0
-    let verifiedRevenueCount = 0;
+    let verifiedRevenueCount: number | null = null;
     try {
-      const revRow = db.prepare(`SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1 AND is_test = 0`).get() as any;
-      verifiedRevenueCount = Number(revRow?.count || 0);
+      const hasIsTest = this.hasLocalColumn('revenue_records', 'is_test');
+      if (hasIsTest !== null) {
+        const revRow = db.prepare(
+          `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
+        ).get() as any;
+        verifiedRevenueCount = Number(revRow?.count || 0);
+      }
     } catch {}
 
     let proposalsCount = 0;
@@ -523,7 +553,14 @@ export class OwnerDigestService {
       proposalsCount = Number(propRow?.count || 0);
     } catch {}
 
-    if (verifiedRevenueCount === 0) {
+    if (verifiedRevenueCount === null) {
+      topPainPoints.push({
+        rank: 1,
+        title: 'Payment Verification Schema Unavailable',
+        metric: 'verified_revenue = UNAVAILABLE',
+        ownerAction: 'Verify revenue_records schema and database connectivity.'
+      });
+    } else if (verifiedRevenueCount === 0) {
       if (proposalsCount === 0) {
         topPainPoints.push({
           rank: 1,
@@ -650,6 +687,41 @@ export class OwnerDigestService {
 
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
     const sitefixFunnelAttribution = getSiteFixFunnelAttributionSummarySync();
+    let latestSuccessRow: any = null;
+    let latestAttemptRow: any = null;
+    try {
+      latestSuccessRow = db.prepare(
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY completed_at DESC, updated_at DESC LIMIT 1`
+      ).get();
+      latestAttemptRow = db.prepare(
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      ).get();
+    } catch {}
+    let freshDealsRow: any = null;
+    try {
+      freshDealsRow = db.prepare(
+        `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
+      ).get();
+    } catch {}
+    let humanClicksRow: any = null;
+    try {
+      humanClicksRow = db.prepare(
+        `SELECT COALESCE(SUM(CASE WHEN ${GENUINE_HUMAN_CLICK_PREDICATE} THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+      ).get();
+    } catch {}
+    const syncCycleUsage = D1Client.getInstance().getCycleUsage();
+    const latestSuccessfulCommercialWorkflow = latestSuccessRow?.workflow_id ? String(latestSuccessRow.workflow_id) : null;
+    const latestBudgetStoppedCycle = Boolean(syncCycleUsage?.budgetExceeded);
+    const commerceActive = Boolean(latestSuccessfulCommercialWorkflow) && !latestBudgetStoppedCycle;
+    const commerceAutopilotStatus = {
+      latestSuccessfulCommercialWorkflow,
+      latestAttemptedWorkflow: latestAttemptRow?.workflow_id ? String(latestAttemptRow.workflow_id) : null,
+      latestBudgetStoppedCycle,
+      eligibleDealInventoryCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
+      genuineHumanOutboundClicks: humanClicksRow && typeof humanClicksRow.c === 'number' ? humanClicksRow.c : null,
+      active: commerceActive,
+      status: (commerceActive ? 'ACTIVE' : 'INACTIVE_UNPROVEN') as 'ACTIVE' | 'INACTIVE_UNPROVEN'
+    };
 
     return {
       date: todayStr,
@@ -661,6 +733,7 @@ export class OwnerDigestService {
       pendingOutreachDrafts,
       topHighTriggerProspects,
       autopilotStatus,
+      commerceAutopilotStatus,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
@@ -755,6 +828,50 @@ export class OwnerDigestService {
    * In non-production, delegates to synchronous generateDigest.
    * In production, queries Cloudflare D1 as the single source of truth without falling back to local SQLite.
    */
+  private buildRealPaymentPredicate(hasIsTest: boolean): string {
+    const base = `(classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL' OR classification = 'MANUAL_VERIFIED') AND verified = 1 AND UPPER(COALESCE(classification, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(source, '')) NOT IN ('TEST', 'SANDBOX', 'TEST_QUARANTINED') AND UPPER(COALESCE(verification_method, '')) NOT IN ('TEST', 'SANDBOX')`;
+    return hasIsTest ? `${base} AND (is_test = 0 OR is_test IS NULL)` : base;
+  }
+
+  private async hasColumn(tableName: string, columnName: string): Promise<boolean | null> {
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        const row = await this.d1Repo.queryOne<{ name: string }>(
+          'pragma_table_info',
+          `SELECT name FROM pragma_table_info(?) WHERE LOWER(name) = LOWER(?)`,
+          [tableName, columnName]
+        );
+        return Boolean(row?.name);
+      }
+      return this.hasLocalColumn(tableName, columnName);
+    } catch {
+      return null;
+    }
+  }
+
+  private hasLocalColumn(tableName: string, columnName: string): boolean | null {
+    try {
+      const cols = getDb().prepare(`PRAGMA table_info(${tableName})`).all() as any[];
+      return cols.some(c => String(c?.name || '').toLowerCase() === columnName.toLowerCase());
+    } catch {
+      return null;
+    }
+  }
+
+  private async hasTable(tableName: string): Promise<boolean> {
+    try {
+      const sql = `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`;
+      if (isProduction() && !process.env.VITEST) {
+        const row = await this.d1Repo.queryOne<{ name: string }>('sqlite_master', sql, [tableName]);
+        return Boolean(row?.name);
+      }
+      const row = getDb().prepare(sql).get(tableName) as any;
+      return Boolean(row?.name);
+    } catch {
+      return false;
+    }
+  }
+
   private async queryCcOne<T = any>(table: string, sql: string, params: any[] = []): Promise<T | null> {
     try {
       if (isProduction() && !process.env.VITEST) {
@@ -843,7 +960,7 @@ export class OwnerDigestService {
       ),
       this.queryCcOne<any>(
         'referral_click_events',
-        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot')) AND (click_status IS NULL OR click_status NOT IN ('DIAGNOSTIC', 'TEST')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+        `SELECT COALESCE(SUM(CASE WHEN ${GENUINE_HUMAN_CLICK_PREDICATE} THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
       ),
       this.queryCcOne<any>(
         'platform_prospects',
@@ -862,9 +979,13 @@ export class OwnerDigestService {
         'revenue_records',
         `SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')`
       ),
-      this.queryCcOne<any>(
-        'cost_ledger',
-        `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+      this.hasTable('cost_ledger').then(exists =>
+        exists
+          ? this.queryCcOne<any>(
+              'cost_ledger',
+              `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+            )
+          : null
       ),
       this.queryCcAll<any>(
         'manual_upi_claims',
@@ -1465,25 +1586,32 @@ export class OwnerDigestService {
 
     try {
       const leadRow = await this.d1Repo.queryOne<{ c: number }>(
-        'prospects',
-        `SELECT COUNT(*) as c FROM prospects WHERE created_at LIKE ?`,
+        'platform_prospects',
+        `SELECT COUNT(*) as c FROM platform_prospects
+         WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')
+           AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR', 'homepage_b2b_inquiry')
+             OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+             OR status IN ('REPLIED', 'INBOUND_REQUEST'))
+           AND created_at LIKE ?`,
         [`${yesterdayStr}%`]
       );
       if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
     } catch {}
 
     try {
-      const payRow = await this.d1Repo.queryOne<{ total: number }>(
-        'revenue_records',
-        `SELECT SUM(amount_inr) as total FROM revenue_records
-         WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
-           AND verified = 1 AND is_test = 0 AND timestamp LIKE ?`,
-        [`${yesterdayStr}%`]
-      );
-      if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
-        payments = payRow.total;
-      } else {
-        payments = 0;
+      const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
+      if (hasIsTest !== null) {
+        const payRow = await this.d1Repo.queryOne<{ total: number }>(
+          'revenue_records',
+          `SELECT SUM(amount_inr) as total FROM revenue_records
+           WHERE ${this.buildRealPaymentPredicate(hasIsTest)} AND timestamp LIKE ?`,
+          [`${yesterdayStr}%`]
+        );
+        if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
+          payments = payRow.total;
+        } else {
+          payments = 0;
+        }
       }
     } catch {}
 
@@ -1534,13 +1662,16 @@ export class OwnerDigestService {
     const topPainPoints: PainPointItem[] = [];
 
     // 1. First pipeline stage with count of 0
-    let verifiedRevenueCount = 0;
+    let verifiedRevenueCount: number | null = null;
     try {
-      const revRow = await this.d1Repo.queryOne<{ count: number }>(
-        'revenue_records',
-        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1 AND is_test = 0`
-      );
-      verifiedRevenueCount = Number(revRow?.count || 0);
+      const hasIsTest = await this.hasColumn('revenue_records', 'is_test');
+      if (hasIsTest !== null) {
+        const revRow = await this.d1Repo.queryOne<{ count: number }>(
+          'revenue_records',
+          `SELECT COUNT(*) as count FROM revenue_records WHERE ${this.buildRealPaymentPredicate(hasIsTest)}`
+        );
+        verifiedRevenueCount = Number(revRow?.count || 0);
+      }
     } catch {}
 
     let proposalsCount = 0;
@@ -1552,7 +1683,14 @@ export class OwnerDigestService {
       proposalsCount = Number(propRow?.count || 0);
     } catch {}
 
-    if (verifiedRevenueCount === 0) {
+    if (verifiedRevenueCount === null) {
+      topPainPoints.push({
+        rank: 1,
+        title: 'Payment Verification Schema Unavailable',
+        metric: 'verified_revenue = UNAVAILABLE',
+        ownerAction: 'Verify revenue_records schema and D1 connectivity.'
+      });
+    } else if (verifiedRevenueCount === 0) {
       if (proposalsCount === 0) {
         topPainPoints.push({
           rank: 1,
@@ -1671,6 +1809,38 @@ export class OwnerDigestService {
     ]);
     const topHighTriggerProspects = this.scoreAndRankProspectAudits(prodAudits, prodProspects, prodContacts, 5);
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
+    const [latestSuccessRow, latestAttemptRow, freshDealsRow, humanClicksRow] = await Promise.all([
+      this.queryCcOne<any>(
+        'automation_jobs',
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') AND status IN ('COMPLETED', 'SUCCEEDED') ORDER BY completed_at DESC, updated_at DESC LIMIT 1`
+      ),
+      this.queryCcOne<any>(
+        'automation_jobs',
+        `SELECT workflow_id FROM automation_jobs WHERE workflow_id IN ('affiliate_offer_reconciliation', 'seasonal_demand_research', 'daily_market_demand_research') ORDER BY COALESCE(completed_at, updated_at, created_at) DESC LIMIT 1`
+      ),
+      this.queryCcOne<any>(
+        'public_deals',
+        `SELECT COUNT(*) as cnt FROM public_deals WHERE verification_status = 'AFFILIATE_VERIFIED' AND availability = 'IN_STOCK'`
+      ),
+      this.queryCcOne<any>(
+        'referral_click_events',
+        `SELECT COALESCE(SUM(CASE WHEN ${GENUINE_HUMAN_CLICK_PREDICATE} THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+      )
+    ]);
+    const { D1Client } = await import('../db/d1-client.js');
+    const cycleUsage = D1Client.getInstance().getCycleUsage();
+    const latestSuccessfulCommercialWorkflow = latestSuccessRow?.workflow_id ? String(latestSuccessRow.workflow_id) : null;
+    const latestBudgetStoppedCycle = Boolean(cycleUsage?.budgetExceeded);
+    const commerceActive = Boolean(latestSuccessfulCommercialWorkflow) && !latestBudgetStoppedCycle;
+    const commerceAutopilotStatus = {
+      latestSuccessfulCommercialWorkflow,
+      latestAttemptedWorkflow: latestAttemptRow?.workflow_id ? String(latestAttemptRow.workflow_id) : null,
+      latestBudgetStoppedCycle,
+      eligibleDealInventoryCount: freshDealsRow && typeof freshDealsRow.cnt === 'number' ? freshDealsRow.cnt : null,
+      genuineHumanOutboundClicks: humanClicksRow && typeof humanClicksRow.c === 'number' ? humanClicksRow.c : null,
+      active: commerceActive,
+      status: (commerceActive ? 'ACTIVE' : 'INACTIVE_UNPROVEN') as 'ACTIVE' | 'INACTIVE_UNPROVEN'
+    };
 
     return {
       date: todayStr,
@@ -1682,6 +1852,7 @@ export class OwnerDigestService {
       pendingOutreachDrafts,
       topHighTriggerProspects,
       autopilotStatus,
+      commerceAutopilotStatus,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },

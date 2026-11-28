@@ -99,7 +99,30 @@ export class BrevoMcpClient {
     return new Date().toISOString().slice(0, 10);
   }
 
+  public getQuotaStatus(): { status: 'UNCONFIGURED' | 'CONFIGURED'; configured: boolean } {
+    const configured = Boolean((process.env.BREVO_API_KEY || '').trim());
+    return { status: configured ? 'CONFIGURED' : 'UNCONFIGURED', configured };
+  }
+
+  private async hasBrevoQuotaTable(): Promise<boolean> {
+    try {
+      const checkSql = `SELECT name FROM sqlite_master WHERE type='table' AND name='brevo_daily_quota'`;
+      if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+        const row = await this.d1Repo.queryOne<{ name: string }>('sqlite_master', checkSql, []);
+        return Boolean(row?.name);
+      }
+      const db = getDb();
+      const row = db.prepare(checkSql).get() as any;
+      return Boolean(row?.name);
+    } catch {
+      return false;
+    }
+  }
+
   public async getDailySendCount(): Promise<number> {
+    if (!(await this.hasBrevoQuotaTable())) {
+      return 0;
+    }
     const today = this.getTodayUtc();
     try {
       if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
@@ -119,6 +142,9 @@ export class BrevoMcpClient {
   }
 
   private async incrementDailySendCount(): Promise<number> {
+    if (!(await this.hasBrevoQuotaTable())) {
+      return 0;
+    }
     const today = this.getTodayUtc();
     const sql = `
       INSERT INTO brevo_daily_quota (date_utc, sends_count, updated_at)

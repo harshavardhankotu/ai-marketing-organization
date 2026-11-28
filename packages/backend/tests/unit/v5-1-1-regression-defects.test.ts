@@ -190,7 +190,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
       // Mock D1 queryOne for partners returning null (unauthorized partner)
       vi.spyOn(d1Repo, 'queryOne').mockResolvedValue(null as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_test_unauth_partner/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_test_unauth_partner/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/partner not authorized; redirect suppressed/i);
@@ -228,7 +228,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
         return { rowsAffected: stmts.length, source: 'D1_REMOTE' } as any;
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_test_no_mutation/redirect?utm_source=twitter&utm_medium=social&utm_campaign=diwali_sale');
+      const res = await app.request('/api/v1/public/deals/deal_test_no_mutation/redirect?utm_source=twitter&utm_medium=social&utm_campaign=diwali_sale', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toContain('https://linksredirect.com/?cid=331585');
 
@@ -268,7 +268,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
         tracking_url: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwww.boat-lifestyle.com%2Fproducts%2Fairdopes-161'
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_camp_mismatch/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_camp_mismatch/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/campaign ID mismatch/i);
@@ -300,7 +300,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
         tracking_url: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwww.boat-lifestyle.com%2Fproducts%2Fairdopes-141-anc-true-wireless-earbuds'
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_dead_handle/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_dead_handle/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/deprecated dead merchant handle/i);
@@ -344,7 +344,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
         return { rowsAffected: stmts.length, source: 'D1_REMOTE' } as any;
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_test_utm/redirect?utm_source=telegram_channel&utm_medium=community&utm_campaign=diwali2026&utm_term=earbuds');
+      const res = await app.request('/api/v1/public/deals/deal_test_utm/redirect?utm_source=telegram_channel&utm_medium=community&utm_campaign=diwali2026&utm_term=earbuds', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(302);
 
       // clickParams: [id, referralId, clickId, orgId, dealId, partnerId, placement, source, medium, campaign, term, referrer, deviceClass, targetUrl]
@@ -407,7 +407,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
 
       vi.spyOn(AutonomousDealDiscoveryEngine.getInstance(), 'resolveDeal').mockResolvedValue(mockOutOfStockDeal as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_oos_test/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_oos_test/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toMatch(/product is currently out of stock or restocking; redirect suppressed/i);

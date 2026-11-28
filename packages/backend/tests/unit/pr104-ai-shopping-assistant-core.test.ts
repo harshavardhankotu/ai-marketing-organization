@@ -565,7 +565,7 @@ describe('PR #104 — AI Shopping Assistant Core', () => {
           'x-test-mode': '1'
         }
       });
-      expect(rTestMode.status).toBe(302);
+      expect(rTestMode.status).toBe(200);
 
       const rInternal = await app.request(`/api/v1/public/deals/${testDealId}/redirect`, {
         headers: {
@@ -573,7 +573,7 @@ describe('PR #104 — AI Shopping Assistant Core', () => {
           'x-internal-admin': 'true'
         }
       });
-      expect(rInternal.status).toBe(302);
+      expect(rInternal.status).toBe(200);
 
       await new Promise(r => setTimeout(r, 50));
       const { getShoppingFunnelSummaryAsync } = await import('../../src/commission/shopping-funnel-tracker.js');

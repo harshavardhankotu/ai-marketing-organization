@@ -134,6 +134,17 @@ export interface OutreachAutopilotHealth {
   paused: boolean;
   autopilotPausedReason: string | null;
   autopilotActive: boolean;
+  outreachAutopilotActive: boolean;
+}
+
+export interface CommerceAutopilotHealth {
+  latestSuccessfulCommercialWorkflow: string | null;
+  latestAttemptedWorkflow: string | null;
+  latestBudgetStoppedCycle: boolean;
+  eligibleDealInventoryCount: number | null;
+  genuineHumanOutboundClicks: number | null;
+  active: boolean;
+  status: 'ACTIVE' | 'INACTIVE_UNPROVEN';
 }
 
 export interface ConstitutionVerificationResult {
@@ -943,7 +954,8 @@ export class AutonomousSystemDoctor {
       bounceRate,
       paused,
       autopilotPausedReason,
-      autopilotActive: autopilotEnabledByEnv && humanGateSatisfied && !paused
+      autopilotActive: autopilotEnabledByEnv && humanGateSatisfied && !paused,
+      outreachAutopilotActive: autopilotEnabledByEnv && humanGateSatisfied && !paused
     };
   }
 

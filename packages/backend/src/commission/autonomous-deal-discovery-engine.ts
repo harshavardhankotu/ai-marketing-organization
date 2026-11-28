@@ -6334,11 +6334,12 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * PR #99: Repairs historical `[object Object]` category serialization rows in `public_deals` and `cuelinks_campaigns`.
+   * PR #99 / PR #106: Repairs historical `[object Object]` category serialization rows in `public_deals`, `partner_offers`, and `cuelinks_campaigns`.
    */
-  public async repairCorruptObjectCategories(): Promise<{ publicDealsRepaired: number; campaignsRepaired: number }> {
+  public async repairCorruptObjectCategories(): Promise<{ publicDealsRepaired: number; partnerOffersRepaired: number; campaignsRepaired: number }> {
     const useRemote = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
     let publicDealsRepaired = 0;
+    let partnerOffersRepaired = 0;
     let campaignsRepaired = 0;
 
     const inferCategory = (text: string, sectorCode?: string): string => {
@@ -6383,11 +6384,26 @@ export class AutonomousDealDiscoveryEngine {
         }
         campaignsRepaired++;
       }
+
+      const poRes = useRemote
+        ? await this.d1Repo.executeRead('partner_offers', "SELECT id, title, description, destination_url FROM partner_offers WHERE category = ? LIMIT 100", ['[object Object]'])
+        : { results: getDb().prepare("SELECT id, title, description, destination_url FROM partner_offers WHERE category = ? LIMIT 100").all('[object Object]') };
+      const poRows: any[] = Array.isArray(poRes?.results) ? poRes.results : [];
+      for (const po of poRows) {
+        const nextCat = inferCategory(`${po.title || ''} ${po.description || ''} ${po.destination_url || ''}`);
+        const sql = "UPDATE partner_offers SET category = ?, updated_at = datetime('now') WHERE id = ? AND category = ?";
+        if (useRemote) {
+          await this.d1Repo.executeWrite('partner_offers', sql, [nextCat, po.id, '[object Object]']);
+        } else {
+          getDb().prepare(sql).run(nextCat, po.id, '[object Object]');
+        }
+        partnerOffersRepaired++;
+      }
     } catch (err: any) {
       console.warn(`[DealEngine] repairCorruptObjectCategories notice: ${err.message}`);
     }
 
-    return { publicDealsRepaired, campaignsRepaired };
+    return { publicDealsRepaired, partnerOffersRepaired, campaignsRepaired };
   }
 
   /**

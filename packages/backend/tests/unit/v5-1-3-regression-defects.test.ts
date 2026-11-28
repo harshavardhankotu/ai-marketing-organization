@@ -409,7 +409,7 @@ describe('V5.1.3 — Regression Defects & Commercial Truth Suite', () => {
         channel: null
       });
 
-      const res = await app.request('/api/v1/public/deals/deal_redirect_test/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_redirect_test/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toContain('Affiliate monetization path temporarily unavailable');
@@ -462,7 +462,7 @@ describe('V5.1.3 — Regression Defects & Commercial Truth Suite', () => {
         campaign: { id: 9999, name: 'Different Merchant' } // Mismatch
       } as any);
 
-      const res = await app.request('/api/v1/public/deals/deal_mismatch_test/redirect');
+      const res = await app.request('/api/v1/public/deals/deal_mismatch_test/redirect', { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' } });
       expect(res.status).toBe(503);
       const text = await res.text();
       expect(text).toContain('campaign ID mismatch');

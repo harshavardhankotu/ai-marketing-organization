@@ -156,7 +156,7 @@ export class DurableJobQueue {
     const organizationId = options.organizationId || 'org_owner_primary';
     const priority = options.priority !== undefined ? options.priority : getWorkflowPriorityLane(options.workflowId);
     const maxAttempts = options.maxAttempts || 3;
-    const availableAt = options.availableAt || new Date().toISOString();
+    const availableAt = this.normalizeUtcTimestamp(options.availableAt);
     const payloadJson = JSON.stringify(options.payload || {});
 
     // First, check if job with idempotencyKey already exists
@@ -235,7 +235,7 @@ export class DurableJobQueue {
     const errors: string[] = [];
     const keys = optionsList.map(o => o.idempotencyKey);
     const placeholders = keys.map(() => '?').join(', ');
-    const checkSql = `SELECT idempotency_key FROM automation_jobs WHERE idempotency_key IN (${placeholders})`;
+    const checkSql = `SELECT idempotency_key FROM automation_jobs WHERE idempotency_key IN (${placeholders}) LIMIT ${Math.max(1, keys.length)}`;
 
     let existingKeysSet = new Set<string>();
     try {
@@ -252,14 +252,16 @@ export class DurableJobQueue {
       errors.push(errMsg);
     }
 
-    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow in production
+    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow
     let activeWfSet = new Set<string>();
-    if (isProduction() && !process.env.VITEST) {
-      const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
+    const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
+    if (workflowIds.length > 0) {
       const wfPlaceholders = workflowIds.map(() => '?').join(', ');
       const activeWfSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE workflow_id IN (${wfPlaceholders}) AND status IN ('QUEUED', 'RUNNING')`;
       try {
-        const rows = await this.d1Repo.query<any>('automation_jobs', activeWfSql, workflowIds);
+        const rows = isProduction()
+          ? await this.d1Repo.query<any>('automation_jobs', activeWfSql, workflowIds)
+          : (getDb().prepare(activeWfSql).all(...workflowIds) as any[]);
         activeWfSet = new Set(rows.map(r => r.workflow_id));
       } catch {}
     }
@@ -279,7 +281,7 @@ export class DurableJobQueue {
       const organizationId = opt.organizationId || 'org_owner_primary';
       const priority = opt.priority !== undefined ? opt.priority : getWorkflowPriorityLane(opt.workflowId);
       const maxAttempts = opt.maxAttempts || 3;
-      const availableAt = opt.availableAt || new Date().toISOString();
+      const availableAt = this.normalizeUtcTimestamp(opt.availableAt);
       const payloadJson = JSON.stringify(opt.payload || {});
 
       const insertSql = `
@@ -714,53 +716,126 @@ export class DurableJobQueue {
     return row ? this.mapJobRow(row) : null;
   }
 
+  private normalizeUtcTimestamp(val?: string | Date | null): string {
+    const formatUtc = (d: Date): string => d.toISOString().replace('T', ' ').slice(0, 19);
+    if (!val) return formatUtc(new Date());
+    if (val instanceof Date) {
+      return Number.isFinite(val.getTime()) ? formatUtc(val) : formatUtc(new Date());
+    }
+    const s = String(val).trim();
+    if (!s) return formatUtc(new Date());
+    const parsed = /[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)
+      ? new Date(s)
+      : new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`);
+    return Number.isFinite(parsed.getTime()) ? formatUtc(parsed) : formatUtc(new Date());
+  }
+
+
   /**
    * Retrieves queue telemetry and comprehensive observability metrics (V4.8 Spec Phase 2D).
+   * Uses stateless, index-bounded queries (7-day window, LIMIT 200) and fails closed on read errors.
    */
   public async getQueueStats(): Promise<{
-    queued: number;
-    running: number;
-    completed: number;
-    completedWithFindings: number;
-    noActionDue: number;
-    partial: number;
-    deferred: number;
-    blocked: number;
-    retryWait: number;
-    failedPermanently: number;
-    failedTotal: number;
-    expiredLeases: number;
-    overdueCount: number;
-    oldestOverdueAgeMinutes: number;
-    oldestQueuedAgeMinutes: number;
+    status: 'OK' | 'UNAVAILABLE';
+    terminalStatsScope: 'RECENT_BOUNDED_7D';
+    queued: number | null;
+    running: number | null;
+    completed: number | null;
+    completedWithFindings: number | null;
+    noActionDue: number | null;
+    partial: number | null;
+    deferred: number | null;
+    blocked: number | null;
+    retryWait: number | null;
+    failedPermanently: number | null;
+    failedTotal: number | null;
+    expiredLeases: number | null;
+    overdueCount: number | null;
+    oldestOverdueAgeMinutes: number | null;
+    oldestQueuedAgeMinutes: number | null;
     lastSuccessfulExecutionAt: string | null;
   }> {
-    const sql = `
+    const activeSql = `
       SELECT
         status,
         COUNT(*) as cnt,
         SUM(CASE WHEN status IN ('QUEUED', 'RETRY_WAIT') AND datetime(available_at) < datetime('now') THEN 1 ELSE 0 END) as overdue,
         MIN(CASE WHEN status IN ('QUEUED', 'RETRY_WAIT') AND datetime(available_at) < datetime('now') THEN available_at ELSE NULL END) as oldest_overdue,
         MIN(CASE WHEN status = 'QUEUED' THEN created_at ELSE NULL END) as oldest_queued,
-        SUM(CASE WHEN status = 'RUNNING' AND lease_expires_at IS NOT NULL AND datetime(lease_expires_at) < datetime('now') THEN 1 ELSE 0 END) as expired_leases,
-        MAX(CASE WHEN status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE') THEN completed_at ELSE NULL END) as last_success
+        SUM(CASE WHEN status = 'RUNNING' AND lease_expires_at IS NOT NULL AND datetime(lease_expires_at) < datetime('now') THEN 1 ELSE 0 END) as expired_leases
       FROM automation_jobs
+      WHERE status IN ('QUEUED', 'RETRY_WAIT', 'RUNNING', 'BLOCKED')
       GROUP BY status
+    `;
+    const terminalSql = `
+      SELECT status, COUNT(*) as cnt
+      FROM (
+        SELECT status
+        FROM automation_jobs
+        WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE', 'PARTIAL', 'DEFERRED', 'FAILED_PERMANENTLY')
+          AND available_at >= datetime('now', '-7 days')
+        ORDER BY available_at DESC
+        LIMIT 200
+      )
+      GROUP BY status
+    `;
+    const lastSuccessSql = `
+      SELECT COALESCE(completed_at, updated_at) AS ts
+      FROM automation_jobs
+      WHERE status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE')
+        AND COALESCE(last_error, '') NOT IN ('SUPERSEDED_DEDUP', 'PARKED_CANCELLED', 'CANCELLED_WORKFLOW_PARKED')
+      ORDER BY COALESCE(completed_at, updated_at) DESC
+      LIMIT 1
     `;
 
     let rows: any[] = [];
-    if (isProduction()) {
-      rows = await this.d1Repo.query('automation_jobs', sql, []);
-    } else {
-      rows = getDb().prepare(sql).all();
+    let terminalRows: any[] = [];
+    let lastSuccessRow: any = null;
+    try {
+      if (isProduction()) {
+        [rows, terminalRows, lastSuccessRow] = await Promise.all([
+          this.d1Repo.query('automation_jobs', activeSql, []),
+          this.d1Repo.query('automation_jobs', terminalSql, []),
+          this.d1Repo.queryOne('automation_jobs', lastSuccessSql, [])
+        ]);
+      } else {
+        const db = getDb();
+        rows = db.prepare(activeSql).all() as any[];
+        terminalRows = db.prepare(terminalSql).all() as any[];
+        lastSuccessRow = db.prepare(lastSuccessSql).get() as any;
+      }
+    } catch {
+      return {
+        status: 'UNAVAILABLE',
+        terminalStatsScope: 'RECENT_BOUNDED_7D',
+        queued: null,
+        running: null,
+        completed: null,
+        completedWithFindings: null,
+        noActionDue: null,
+        partial: null,
+        deferred: null,
+        blocked: null,
+        retryWait: null,
+        failedPermanently: null,
+        failedTotal: null,
+        expiredLeases: null,
+        overdueCount: null,
+        oldestOverdueAgeMinutes: null,
+        oldestQueuedAgeMinutes: null,
+        lastSuccessfulExecutionAt: null
+      };
     }
 
     const counts: Record<string, number> = {};
+    for (const t of terminalRows) {
+      counts[String(t.status || '')] = Number(t.cnt || 0);
+    }
     let totalOverdue = 0;
     let totalExpiredLeases = 0;
     let oldestOverdueTs: string | null = null;
     let oldestQueuedTs: string | null = null;
-    let lastSuccessTs: string | null = null;
+    const lastSuccessTs: string | null = lastSuccessRow?.ts ? String(lastSuccessRow.ts) : null;
 
     const toUtcMs = (ts: string): number => {
       const s = String(ts || '').trim();
@@ -784,11 +859,6 @@ export class DurableJobQueue {
           oldestQueuedTs = r.oldest_queued;
         }
       }
-      if (r.last_success) {
-        if (!lastSuccessTs || toUtcMs(r.last_success) > toUtcMs(lastSuccessTs)) {
-          lastSuccessTs = r.last_success;
-        }
-      }
     }
 
     let oldestOverdueAgeMinutes = 0;
@@ -797,19 +867,15 @@ export class DurableJobQueue {
       oldestOverdueAgeMinutes = Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 60000)) : 0;
     }
 
-    const toUtcAgeMs = (ts: string): number => {
-      const s = String(ts || '').trim();
-      if (!s) return NaN;
-      if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime();
-      return new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`).getTime();
-    };
     let oldestQueuedAgeMinutes = 0;
     if (oldestQueuedTs) {
-      const diffMs = Date.now() - toUtcAgeMs(oldestQueuedTs);
+      const diffMs = Date.now() - toUtcMs(oldestQueuedTs);
       oldestQueuedAgeMinutes = Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 60000)) : 0;
     }
 
     return {
+      status: 'OK',
+      terminalStatsScope: 'RECENT_BOUNDED_7D',
       queued: counts['QUEUED'] || 0,
       running: counts['RUNNING'] || 0,
       completed: counts['COMPLETED'] || 0,
@@ -865,7 +931,7 @@ export class DurableJobQueue {
     const parkedSet = new Set<string>(options?.parkedWorkflowIds ?? []);
     const cadenceMap = new Map<string, number>();
     try {
-      const regSql = `SELECT id, enabled, cadence_minutes FROM automation_registry LIMIT 100`;
+      const regSql = `SELECT id, enabled, cadence_minutes FROM automation_registry LIMIT 50`;
       const regRows = this.d1Repo.isRemoteD1ReadAllowed()
         ? await this.d1Repo.query<any>('automation_registry', regSql)
         : getDb().prepare(regSql).all() as any[];
@@ -905,16 +971,39 @@ export class DurableJobQueue {
     };
 
     try {
-      const candidateSql = `
+      const candidateDueQueuedSql = `
         SELECT id, workflow_id, available_at, created_at
         FROM automation_jobs
-        WHERE status IN ('QUEUED', 'RETRY_WAIT')
-        ORDER BY created_at DESC
-        LIMIT 200
+        WHERE status = 'QUEUED' AND available_at <= datetime('now')
+        ORDER BY available_at DESC, id DESC
+        LIMIT 100
       `;
-      const queuedRows = this.d1Repo.isRemoteD1ReadAllowed()
-        ? await this.d1Repo.query<any>('automation_jobs', candidateSql)
-        : getDb().prepare(candidateSql).all() as any[];
+      const candidateFutureQueuedSql = `
+        SELECT id, workflow_id, available_at, created_at
+        FROM automation_jobs
+        WHERE status = 'QUEUED' AND available_at > datetime('now')
+        ORDER BY available_at DESC, id DESC
+        LIMIT 50
+      `;
+      const candidateRetrySql = `
+        SELECT id, workflow_id, available_at, created_at
+        FROM automation_jobs
+        WHERE status = 'RETRY_WAIT'
+        ORDER BY available_at DESC, id DESC
+        LIMIT 50
+      `;
+      const [dueQueuedRows, futureQueuedRows, retryRows] = this.d1Repo.isRemoteD1ReadAllowed()
+        ? await Promise.all([
+            this.d1Repo.query<any>('automation_jobs', candidateDueQueuedSql),
+            this.d1Repo.query<any>('automation_jobs', candidateFutureQueuedSql),
+            this.d1Repo.query<any>('automation_jobs', candidateRetrySql)
+          ])
+        : [
+            getDb().prepare(candidateDueQueuedSql).all() as any[],
+            getDb().prepare(candidateFutureQueuedSql).all() as any[],
+            getDb().prepare(candidateRetrySql).all() as any[]
+          ];
+      const queuedRows = [...dueQueuedRows, ...retryRows, ...futureQueuedRows];
 
       const parseUtc = (ts: string | null | undefined): number => {
         const s = String(ts || '').trim();
@@ -929,10 +1018,9 @@ export class DurableJobQueue {
       const nowMs = Date.now();
 
       if (!hasExplicitThreshold) {
-        // Default production recovery: defer parked workflow QUEUED rows; for enabled workflows with
-        // rows older than 60m, keep strictly the single newest row per workflow_id (reset to datetime('now'))
-        // and mark all older duplicates DEFERRED + SUPERSEDED_STALE_WINDOW.
-        const byWorkflow = new Map<string, Array<{ id: string; sortMs: number; ageMins: number }>>();
+        // Default production recovery: defer parked workflow QUEUED rows; for enabled workflows,
+        // due jobs ALWAYS outrank future-scheduled jobs so a future job never displaces stale due work.
+        const byWorkflow = new Map<string, Array<{ id: string; isDue: boolean; availMs: number; createdMs: number; ageMins: number }>>();
         for (const row of queuedRows) {
           const wfId = String(row.workflow_id || '');
           if (parkedSet.has(wfId)) {
@@ -942,14 +1030,25 @@ export class DurableJobQueue {
           const createdMs = parseUtc(row.created_at);
           const availMs = parseUtc(row.available_at);
           const refMs = Number.isFinite(availMs) ? availMs : (Number.isFinite(createdMs) ? createdMs : nowMs);
+          const isDue = !Number.isFinite(availMs) || availMs <= nowMs;
           const ageMins = (nowMs - refMs) / 60000;
-          const sortMs = Number.isFinite(availMs) ? availMs : (Number.isFinite(createdMs) ? createdMs : nowMs);
           if (!byWorkflow.has(wfId)) byWorkflow.set(wfId, []);
-          byWorkflow.get(wfId)!.push({ id: String(row.id), sortMs, ageMins });
+          byWorkflow.get(wfId)!.push({
+            id: String(row.id),
+            isDue,
+            availMs: Number.isFinite(availMs) ? availMs : 0,
+            createdMs: Number.isFinite(createdMs) ? createdMs : 0,
+            ageMins
+          });
         }
 
         for (const [, rows] of byWorkflow.entries()) {
-          rows.sort((a, b) => b.sortMs - a.sortMs);
+          rows.sort((a, b) => {
+            if (a.isDue !== b.isDue) return a.isDue ? -1 : 1;
+            if (b.availMs !== a.availMs) return b.availMs - a.availMs;
+            if (b.createdMs !== a.createdMs) return b.createdMs - a.createdMs;
+            return b.id.localeCompare(a.id);
+          });
           const newest = rows[0];
           if (newest && newest.ageMins > 60) {
             refreshIds.push(newest.id);
@@ -976,7 +1075,7 @@ export class DurableJobQueue {
 
       if (parkedQueuedIds.length > 0) {
         const placeholders = parkedQueuedIds.map(() => '?').join(', ');
-        await execWrite(
+        const parkedDeferred = await execWrite(
           `UPDATE automation_jobs
            SET status = 'DEFERRED',
                last_error = 'PARKED_WORKFLOW',
@@ -1046,7 +1145,7 @@ export class DurableJobQueue {
     let requeuedActiveBlockedCount = 0;
     let deferredMissingCredentialCount = 0;
     try {
-      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED' ORDER BY updated_at DESC LIMIT 50`;
+      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED' LIMIT 25`;
       const blockedRows = this.d1Repo.isRemoteD1ReadAllowed()
         ? await this.d1Repo.query<any>('automation_jobs', blockedSql)
         : getDb().prepare(blockedSql).all() as any[];
@@ -1132,7 +1231,7 @@ export class DurableJobQueue {
     const activeIds = Array.from(activeSet);
     if (activeIds.length > 0 && (supersededStaleCount > 0 || requeuedActiveBlockedCount > 0 || options?.activeWorkflowIds)) {
       try {
-        const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT') LIMIT 50`;
+        const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')`;
         const activeRows = this.d1Repo.isRemoteD1ReadAllowed()
           ? await this.d1Repo.query<any>('automation_jobs', activeSql)
           : getDb().prepare(activeSql).all() as any[];
@@ -1186,14 +1285,48 @@ export class DurableJobQueue {
   }
 
   public async compactStaleDuplicateQueueJobs(): Promise<number> {
+    let totalChanged = 0;
     try {
-      // PR #92: Replace correlated subquery with bounded indexed scan + primary-key batch update
-      const queuedSql = `SELECT id, workflow_id FROM automation_jobs WHERE status = 'QUEUED' ORDER BY created_at DESC, id DESC LIMIT 100`;
-      const rows = isProduction() && !process.env.VITEST
-        ? await this.d1Repo.query<any>('automation_jobs', queuedSql)
-        : getDb().prepare(queuedSql).all() as any[];
+      // PR #92 / PR #106: Identical deterministic ordering in SQL and JS (available_at DESC, id DESC) within due & future buckets
+      const queuedDueSql = `SELECT id, workflow_id, available_at, created_at FROM automation_jobs WHERE status = 'QUEUED' AND available_at <= datetime('now') ORDER BY available_at DESC, id DESC LIMIT 100`;
+      const queuedFutureSql = `SELECT id, workflow_id, available_at, created_at FROM automation_jobs WHERE status = 'QUEUED' AND available_at > datetime('now') ORDER BY available_at DESC, id DESC LIMIT 50`;
+      const [dueRows, futureRows] = isProduction() && !process.env.VITEST
+        ? await Promise.all([
+            this.d1Repo.query<any>('automation_jobs', queuedDueSql),
+            this.d1Repo.query<any>('automation_jobs', queuedFutureSql)
+          ])
+        : [
+            getDb().prepare(queuedDueSql).all() as any[],
+            getDb().prepare(queuedFutureSql).all() as any[]
+          ];
 
-      if (!rows || rows.length <= 1) return 0;
+      const parseUtcMs = (ts: string | null | undefined): number => {
+        const s = String(ts || '').trim();
+        if (!s) return 0;
+        if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime() || 0;
+        return new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`).getTime() || 0;
+      };
+      const sortNewest = (a: any, b: any) => {
+        const availDiff = parseUtcMs(b.available_at) - parseUtcMs(a.available_at);
+        if (availDiff !== 0) return availDiff;
+        const createdDiff = parseUtcMs(b.created_at) - parseUtcMs(a.created_at);
+        if (createdDiff !== 0) return createdDiff;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      };
+      dueRows.sort(sortNewest);
+      futureRows.sort(sortNewest);
+
+      // Deduplicate candidate rows across due and future buckets in case datetime('now') ticks between queries
+      const seenIds = new Set<string>();
+      const rows: any[] = [];
+      for (const row of [...dueRows, ...futureRows]) {
+        const id = String(row?.id || '');
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+        rows.push(row);
+      }
+
+      if (rows.length <= 1) return 0;
 
       const seenWorkflows = new Set<string>();
       const duplicateIds: string[] = [];
@@ -1208,24 +1341,28 @@ export class DurableJobQueue {
 
       if (duplicateIds.length === 0) return 0;
 
-      const idsToUpdate = duplicateIds.slice(0, 50);
-      const placeholders = idsToUpdate.map(() => '?').join(',');
-      const updateSql = `
-        UPDATE automation_jobs
-        SET status = 'NO_ACTION_DUE', last_error = 'SUPERSEDED_DEDUP', updated_at = datetime('now')
-        WHERE id IN (${placeholders})
-      `;
+      for (let i = 0; i < duplicateIds.length; i += 50) {
+        const idsToUpdate = duplicateIds.slice(i, i + 50);
+        const placeholders = idsToUpdate.map(() => '?').join(',');
+        const updateSql = `
+          UPDATE automation_jobs
+          SET status = 'NO_ACTION_DUE', last_error = 'SUPERSEDED_DEDUP', updated_at = datetime('now')
+          WHERE id IN (${placeholders}) AND status = 'QUEUED'
+        `;
 
-      if (isProduction() && !process.env.VITEST) {
-        const res = await this.d1Repo.executeWrite('automation_jobs', updateSql, idsToUpdate);
-        return (res as any)?.rowsAffected ?? (res as any)?.changes ?? idsToUpdate.length;
-      } else {
-        const res = getDb().prepare(updateSql).run(...idsToUpdate);
-        return res.changes ?? idsToUpdate.length;
+        if (isProduction() && !process.env.VITEST) {
+          const res = await this.d1Repo.executeWrite('automation_jobs', updateSql, idsToUpdate);
+          const changed = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+          totalChanged += changed;
+        } else {
+          const res = getDb().prepare(updateSql).run(...idsToUpdate);
+          totalChanged += res.changes ?? 0;
+        }
       }
+      return totalChanged;
     } catch (err: any) {
       console.warn(`[JobQueue] compactStaleDuplicateQueueJobs notice: ${err.message}`);
-      return 0;
+      return totalChanged;
     }
   }
 
